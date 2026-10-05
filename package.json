@@ -1,25 +1,29 @@
 {
   "name": "minesweeper3d",
-  "version": "0.1.0",
-  "description": "",
-  "main": "index.js",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Minesweeper in 3D - Bun + TypeScript backend, React + three.js frontend, shared pure game core",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-	"start": "node index.js"
+    "dev": "bun run tools/dev.ts",
+    "dev:server": "bun --watch packages/server/src/index.ts",
+    "dev:web": "bun run --cwd packages/web dev",
+    "build": "bun run --cwd packages/web build",
+    "start": "bun run packages/server/src/index.ts",
+    "test": "bun run test:core && bun run test:server && bun run test:web",
+    "test:core": "bun run --cwd packages/game-core test",
+    "test:server": "bun run --cwd packages/server test",
+    "test:web": "bun run --cwd packages/web test",
+    "test:e2e": "bun run --cwd packages/web test:e2e",
+    "typecheck": "bun run --cwd packages/game-core typecheck && bun run --cwd packages/server typecheck && bun run --cwd packages/web typecheck",
+    "check": "bun run typecheck && bun run test"
   },
-  "author": "shprodt",
+  "engines": {
+    "bun": ">=1.2.0"
+  },
   "license": "ISC",
-  "dependencies": {
-    "body-parser": "1.16.0",
-    "bower": "1.8.0",
-    "cookie-parser": "^1.4.3",
-    "express": "4.14.1",
-    "mongodb": "2.2.22",
-    "serve-favicon": "2.3.2",
-    "socket.io": "^1.7.2"
-  },
-  "repository": {
-  "type": "git",
-  "url": "git://github.com/shprodt/minesweeper3d.git"
-}
+  "author": "shprodt"
 }

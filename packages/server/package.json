@@ -1,0 +1,24 @@
+{
+  "name": "@minesweeper3d/server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Bun + TypeScript backend: game API, realtime hub and static hosting of the web client",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@minesweeper3d/game-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^5.9.3"
+  }
+}

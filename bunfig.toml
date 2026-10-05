@@ -1,0 +1,7 @@
+# Bun configuration for the whole repository.
+#
+# The web package's component tests need a DOM. Preloading it here means a bare
+# `bun test` from the repository root behaves exactly like `bun run test`
+# (which runs each package in its own directory).
+[test]
+preload = ["./packages/web/test/setup.ts"]
