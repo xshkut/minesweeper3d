@@ -1,4 +1,4 @@
-import { computeAdjacency, createCells, mineCellsOf, mineOffsetsOf, placeMines } from "./board";
+import { computeAdjacency, createCells, markOf, mineCellsOf, mineOffsetsOf, nextMark, placeMines } from "./board";
 import { createGrid, NEIGHBOURS, neighboursOf, type Grid } from "./grid";
 import { normalizeSeed, randomInt, randomSeed } from "./random";
 import { DEFAULT_RULES, hasRevealedAllSafeCells, isExposed, isGameOver } from "./rules";
@@ -69,6 +69,7 @@ function buildState(config: GameConfig, grid: Grid, mineOffsets: readonly number
     cells: createCells(grid, mineOffsets, adjacency),
     revealedCount: 0,
     flagCount: 0,
+    freeRevealsLeft: config.freeReveals,
     explodedAt: null,
     rngState,
   };
@@ -81,8 +82,10 @@ function buildState(config: GameConfig, grid: Grid, mineOffsets: readonly number
  * the cell is outside the board, already revealed, flagged, not exposed, or
  * when the game is over.
  *
- * Revealing a mine ends the game and uncovers every mine; revealing a cell
- * without adjacent mines floods the connected safe region.
+ * Revealing a mine normally ends the game and uncovers every mine; when the
+ * config sets `minesFatal: false` only that one cell is uncovered and play
+ * continues. Revealing a cell without adjacent mines floods the connected safe
+ * region.
  */
 export function revealCell(state: GameState, cell: CellIndex): GameTransition {
   const grid = createGrid(state.config.size);
@@ -96,12 +99,12 @@ export function revealCell(state: GameState, cell: CellIndex): GameTransition {
   let current = state;
   if (target.hasMine) {
     if (!(current.config.firstRevealSafe && current.status === "ready")) {
-      return explode(current, target.index);
+      return detonate(current, target.index, offset);
     }
     current = relocateMine(current, grid, offset);
     // Unreachable while `mineCount <= cellCount - 1` is enforced, but never let
     // a broken invariant turn into "opening" a mine.
-    if ((current.cells[offset] as Cell).hasMine) return explode(current, target.index);
+    if ((current.cells[offset] as Cell).hasMine) return detonate(current, target.index, offset);
   }
 
   const status = current.status === "ready" ? "playing" : current.status;
@@ -109,12 +112,18 @@ export function revealCell(state: GameState, cell: CellIndex): GameTransition {
 }
 
 /**
- * Toggles the flag of a covered cell.
+ * Advances the mark of a covered cell: none, flag, question, none again.
+ *
+ * A flag is a claim - it counts towards `flagCount` and it keeps the cell shut,
+ * because {@link revealCell} refuses flagged cells. A question mark is a note
+ * to the player: it is not counted as a flag and it does not protect the cell
+ * from being opened, which is what makes "I am not sure about this one" a
+ * usable thought rather than a second kind of flag.
  *
  * Flags never limit how many can be placed (the prototype did the same); the
  * client derives "mines left" from {@link remainingMineCount}.
  */
-export function toggleFlag(state: GameState, cell: CellIndex): GameTransition {
+export function cycleMark(state: GameState, cell: CellIndex): GameTransition {
   const grid = createGrid(state.config.size);
   if (isGameOver(state.status) || !grid.contains(cell)) return unchanged(state);
 
@@ -122,13 +131,54 @@ export function toggleFlag(state: GameState, cell: CellIndex): GameTransition {
   const target = state.cells[offset];
   if (target === undefined || target.isRevealed) return unchanged(state);
 
-  const flagged = !target.isFlagged;
+  const mark = nextMark(markOf(target));
   const cells = [...state.cells];
-  cells[offset] = { ...target, isFlagged: flagged };
+  cells[offset] = { ...target, isFlagged: mark === "flag", isQuestioned: mark === "question" };
 
   return {
-    state: { ...state, cells, flagCount: state.flagCount + (flagged ? 1 : -1) },
-    events: [{ type: "flagChanged", cell: target.index, flagged }],
+    state: {
+      ...state,
+      cells,
+      // Only a real flag moves the count; the cycle is the single writer, so
+      // the two booleans can never both be set and the bookkeeping stays exact.
+      flagCount: state.flagCount - (target.isFlagged ? 1 : 0) + (mark === "flag" ? 1 : 0),
+    },
+    events: [{ type: "markChanged", cell: target.index, mark }],
+  };
+}
+
+/**
+ * Spends a free reveal on a covered cell to learn whether it hides a mine.
+ *
+ * This is the optional aid of {@link GameConfig.freeReveals}: the cell stays
+ * covered and neither its adjacency count nor the state of its neighbours is
+ * disclosed, so the answer is information rather than a shortcut. The player
+ * learns one bit and pays one charge for it.
+ *
+ * Any covered cell can be probed, exposed or buried: the detector answers a
+ * question about the board, not about the digging frontier. Nothing happens -
+ * and no charge is spent - when the cell is already revealed or already probed,
+ * when the game is over, or when the charges are gone.
+ *
+ * Probing deliberately leaves the status alone: flags and probes are moves
+ * *about* cells, while only opening one actually gets the round under way.
+ * That keeps the co-op clock rule ("it starts on the first reveal") intact.
+ */
+export function probeCell(state: GameState, cell: CellIndex): GameTransition {
+  const grid = createGrid(state.config.size);
+  if (isGameOver(state.status) || !grid.contains(cell)) return unchanged(state);
+  if (state.freeRevealsLeft <= 0) return unchanged(state);
+
+  const offset = grid.offsetOf(cell);
+  const target = state.cells[offset];
+  if (target === undefined || target.isRevealed || target.isProbed) return unchanged(state);
+
+  const cells = [...state.cells];
+  cells[offset] = { ...target, isProbed: true };
+
+  return {
+    state: { ...state, cells, freeRevealsLeft: state.freeRevealsLeft - 1 },
+    events: [{ type: "cellProbed", cell: target.index, hasMine: target.hasMine }],
   };
 }
 
@@ -170,13 +220,18 @@ export function isFinished(state: GameState): boolean {
 export function toClientView(state: GameState): ClientGameState {
   const revealAll = isGameOver(state.status);
   const cells: ClientCell[] = state.cells.map((cell) => {
-    const visible = cell.isRevealed || revealAll;
+    const revealed = cell.isRevealed || revealAll;
     return {
       index: cell.index,
-      adjacentMines: visible ? cell.adjacentMines : 0,
+      adjacentMines: revealed ? cell.adjacentMines : 0,
       isRevealed: cell.isRevealed,
       isFlagged: cell.isFlagged,
-      hasMine: visible && cell.hasMine,
+      isQuestioned: cell.isQuestioned,
+      isProbed: cell.isProbed,
+      // A free reveal buys exactly this one bit, so a probed cell reports it -
+      // and still reports no adjacency count, because a probe tells the player
+      // whether *this* cube hides a mine, not how crowded its neighbourhood is.
+      hasMine: revealed || cell.isProbed ? cell.hasMine : false,
     };
   });
 
@@ -186,6 +241,7 @@ export function toClientView(state: GameState): ClientGameState {
     cells,
     revealedCount: state.revealedCount,
     flagCount: state.flagCount,
+    freeRevealsLeft: state.freeRevealsLeft,
     explodedAt: state.explodedAt,
   };
 }
@@ -198,6 +254,10 @@ export interface CreateConfigOptions {
   readonly seed?: number;
   /** Defaults to {@link DEFAULT_RULES.firstRevealSafe}. */
   readonly firstRevealSafe?: boolean;
+  /** Defaults to {@link DEFAULT_RULES.minesFatal}. */
+  readonly minesFatal?: boolean;
+  /** Defaults to {@link DEFAULT_RULES.freeReveals}. */
+  readonly freeReveals?: number;
 }
 
 /** Builds a config from options, drawing a fresh seed when none is given. */
@@ -207,6 +267,32 @@ export function createConfig(options: CreateConfigOptions): GameConfig {
     mineCount: options.mineCount,
     seed: normalizeSeed(options.seed ?? randomSeed()),
     firstRevealSafe: options.firstRevealSafe ?? DEFAULT_RULES.firstRevealSafe,
+    minesFatal: options.minesFatal ?? DEFAULT_RULES.minesFatal,
+    freeReveals: options.freeReveals ?? DEFAULT_RULES.freeReveals,
+  };
+}
+
+/**
+ * Turns an opened mine into a transition, fatally or not.
+ *
+ * Fatal mines (the default) end the game; non-fatal ones leave the rest of the
+ * board alone. Keeping the choice in one place means callers never have to
+ * inspect the config before calling {@link revealCell}.
+ */
+function detonate(state: GameState, cell: CellIndex, offset: number): GameTransition {
+  if (state.config.minesFatal) return explode(state, cell);
+
+  const target = state.cells[offset] as Cell;
+  const cells = [...state.cells];
+  cells[offset] = { ...target, isRevealed: true };
+
+  return {
+    // The round is under way even if this was the opening move.
+    state: { ...state, status: state.status === "ready" ? "playing" : state.status, cells, explodedAt: cell },
+    // No `cellsRevealed`: the mine is not a safe cell, so it does not count
+    // towards the win condition. The client learns about it from `explodedAt`
+    // and from the revealed cell in the snapshot.
+    events: [{ type: "mineExploded", cell }],
   };
 }
 

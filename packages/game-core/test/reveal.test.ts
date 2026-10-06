@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { revealCell, toggleFlag, vec3 } from "../src/index";
+import { cycleMark, revealCell, vec3 } from "../src/index";
 import { at, cell, eventTypes, game, gameWithMines, revealedKeys } from "./helpers";
 
 describe("revealing a cell", () => {
@@ -60,7 +60,7 @@ describe("revealing a cell", () => {
   });
 
   it("does not open flagged cells", () => {
-    const flagged = toggleFlag(game(vec3(3, 3, 3), 0, { seed: 1 }), at(1, 1, 1)).state;
+    const flagged = cycleMark(game(vec3(3, 3, 3), 0, { seed: 1 }), at(1, 1, 1)).state;
     expect(flagged.flagCount).toBe(1);
 
     const transition = revealCell(flagged, at(0, 0, 0));
@@ -131,7 +131,7 @@ describe("winning", () => {
   it("freezes the game afterwards", () => {
     const won = revealCell(game(vec3(3, 3, 3), 0, { seed: 9 }), at(0, 0, 0)).state;
     expect(revealCell(won, at(1, 1, 1)).state).toBe(won);
-    expect(toggleFlag(won, at(1, 1, 1)).state).toBe(won);
+    expect(cycleMark(won, at(1, 1, 1)).state).toBe(won);
   });
 });
 

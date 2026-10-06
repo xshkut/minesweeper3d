@@ -2,7 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- `viewport-fit=cover` lets the HUD reach into the notch's safe area,
+         which the stylesheet pads back out with `env(safe-area-inset-*)`. The
+         page stays zoomable on purpose: pinch-to-zoom on the HUD is a browser
+         gesture, but a player who needs to enlarge the text must keep it. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark light" />
     <link
       rel="icon"

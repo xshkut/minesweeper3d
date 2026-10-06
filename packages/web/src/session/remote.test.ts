@@ -4,6 +4,8 @@ import type { CellIndex, ClientGameState } from "@minesweeper3d/game-core";
 import { createRemoteSession } from "./remote";
 import type { FetchLike, SocketLike } from "./remote";
 import type { GameSession } from "./types";
+import type { PlayerDto, RoomDto, RoomJoinDto } from "./dto";
+import { testPlayer, testRoom } from "../test/fixtures";
 
 /** A scriptable stand-in for a browser WebSocket. */
 class FakeSocket implements SocketLike {
@@ -118,8 +120,11 @@ describe("remote session", () => {
     harness.session.reveal({ x: 0, y: 0, z: 0 });
     expect(harness.sockets[0]?.sent).toEqual([JSON.stringify({ type: "reveal", cell: { x: 0, y: 0, z: 0 } })]);
 
-    harness.session.toggleFlag({ x: 1, y: 0, z: 0 });
-    expect(harness.sockets[0]?.sent[1]).toBe(JSON.stringify({ type: "flag", cell: { x: 1, y: 0, z: 0 } }));
+    harness.session.cycleMark({ x: 1, y: 0, z: 0 });
+    expect(harness.sockets[0]?.sent[1]).toBe(JSON.stringify({ type: "mark", cell: { x: 1, y: 0, z: 0 } }));
+
+    harness.session.probe({ x: 2, y: 0, z: 0 });
+    expect(harness.sockets[0]?.sent[2]).toBe(JSON.stringify({ type: "probe", cell: { x: 2, y: 0, z: 0 } }));
 
     harness.session.dispose();
   });
@@ -248,10 +253,326 @@ describe("remote session", () => {
   });
 });
 
-/** A DTO envelope with a stable id/revision, matching the server contract. */
-function gameDto(state: ClientGameState) {
+describe("remote room session", () => {
+  test("attaches to an existing room without creating a game", () => {
+    const harness = createRoomHarness();
+    const snapshot = harness.session.getSnapshot();
+
+    expect(snapshot.room?.id).toBe("ROOM01");
+    expect(snapshot.playerId).toBe("p1");
+    expect(snapshot.state?.cells).toHaveLength(27);
+    expect(harness.requests).toHaveLength(0);
+    expect(harness.sockets[0]?.url).toBe("ws://game.test/api/rooms/ROOM01/ws?player=p1");
+
+    harness.session.dispose();
+  });
+
+  test("applies room presence frames", () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitMessage({
+      type: "room",
+      room: roomDto("ROOM01", "game-1", [player("p1", "Ada", true), player("p2", "Grace", false)]),
+    });
+
+    const players = harness.session.getSnapshot().room?.players ?? [];
+    expect(players.map((entry) => [entry.name, entry.connected])).toEqual([
+      ["Ada", true],
+      ["Grace", false],
+    ]);
+
+    harness.session.dispose();
+  });
+
+  test("ignores another player's private board", () => {
+    const harness = createRoomHarness();
+    const other = toClientView(createGame(presetConfig("tiny", { seed: 11 })));
+
+    harness.sockets[0]?.emitMessage({ type: "update", game: gameDto(other, "game-1"), events: [], board: "p2" });
+    expect(harness.session.getSnapshot().state?.config.seed).toBe(5);
+
+    harness.sockets[0]?.emitMessage({ type: "update", game: gameDto(other, "game-1"), events: [], board: "p1" });
+    expect(harness.session.getSnapshot().state?.config.seed).toBe(11);
+
+    harness.session.dispose();
+  });
+
+  test("applies an untagged update: that is the board the room shares", () => {
+    const harness = createRoomHarness();
+    const other = toClientView(createGame(presetConfig("tiny", { seed: 11 })));
+
+    harness.sockets[0]?.emitMessage({ type: "update", game: gameDto(other, "game-1"), events: [] });
+
+    expect(harness.session.getSnapshot().state?.config.seed).toBe(11);
+    harness.session.dispose();
+  });
+
+  test("carries the match state of a room frame", () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitMessage({
+      type: "room",
+      room: testRoom({
+        id: "ROOM01",
+        mode: "coop",
+        status: "playing",
+        round: 2,
+        deadlineAt: "2026-01-01T00:01:35.000Z",
+        timeLimitMs: 95_000,
+      }),
+    });
+
+    const room = harness.session.getSnapshot().room;
+    expect(room?.mode).toBe("coop");
+    expect(room?.status).toBe("playing");
+    expect(room?.round).toBe(2);
+    expect(room?.deadlineAt).toBe("2026-01-01T00:01:35.000Z");
+    expect(room?.timeLimitMs).toBe(95_000);
+
+    harness.session.dispose();
+  });
+
+  test("newGame restarts the shared board and reopens the socket", async () => {
+    const harness = createRoomHarness();
+    const first = harness.sockets[0] as FakeSocket;
+
+    harness.session.newGame();
+    await waitFor(() => harness.requests.length === 1);
+
+    expect(harness.requests[0]?.url).toBe("http://game.test/api/rooms/ROOM01/restart");
+    expect(JSON.parse(harness.requests[0]?.body ?? "{}")).toEqual({});
+
+    await waitFor(() => harness.sockets.length === 2);
+    expect(first.closed).toBe(true);
+    expect(harness.session.getSnapshot().room?.gameId).toBe("game-2");
+    expect(harness.session.getSnapshot().state?.status).toBe("ready");
+    expect(harness.sockets[1]?.url).toBe("ws://game.test/api/rooms/ROOM01/ws?player=p1");
+
+    harness.session.dispose();
+  });
+
+  test("newGame with a preset asks the server to resize", async () => {
+    const harness = createRoomHarness();
+
+    harness.session.newGame({ presetId: "medium" });
+    await waitFor(() => harness.requests.length === 1);
+
+    expect(JSON.parse(harness.requests[0]?.body ?? "{}")).toEqual({ presetId: "medium" });
+
+    harness.session.dispose();
+  });
+
+  test("a welcome frame carries the room and the seated player", () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitMessage({
+      type: "welcome",
+      game: gameDto(harness.state),
+      room: roomDto("ROOM01", "game-1", [player("p1", "Ada", true)]),
+      playerId: "p1",
+    });
+
+    expect(harness.session.getSnapshot().room?.players).toHaveLength(1);
+    expect(harness.session.getSnapshot().playerId).toBe("p1");
+
+    harness.session.dispose();
+  });
+
+  test("publishes where this player is pointing, but not once per pixel", async () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitOpen();
+
+    harness.session.setCursor?.({ x: 0, y: 0, z: 0 });
+    expect(harness.sockets[0]?.sent).toEqual([JSON.stringify({ type: "cursor", cell: { x: 0, y: 0, z: 0 } })]);
+
+    // Two moves inside the window collapse into the one frame that matters:
+    // where the pointer ended up.
+    harness.session.setCursor?.({ x: 1, y: 0, z: 0 });
+    harness.session.setCursor?.({ x: 2, y: 0, z: 0 });
+    expect(harness.sockets[0]?.sent).toHaveLength(1);
+
+    await waitFor(() => (harness.sockets[0]?.sent.length ?? 0) === 2);
+    expect(harness.sockets[0]?.sent[1]).toBe(JSON.stringify({ type: "cursor", cell: { x: 2, y: 0, z: 0 } }));
+
+    harness.session.dispose();
+  });
+
+  test("a move back to the same cell is not published again", async () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitOpen();
+
+    harness.session.setCursor?.({ x: 0, y: 0, z: 0 });
+    await Bun.sleep(120);
+    harness.session.setCursor?.({ x: 0, y: 0, z: 0 });
+    await Bun.sleep(120);
+
+    expect(harness.sockets[0]?.sent).toHaveLength(1);
+
+    harness.session.dispose();
+  });
+
+  test("a lifted pointer is published as no cell at all", async () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitOpen();
+
+    harness.session.setCursor?.({ x: 0, y: 0, z: 0 });
+    await Bun.sleep(120);
+    harness.session.setCursor?.(null);
+
+    expect(harness.sockets[0]?.sent[1]).toBe(JSON.stringify({ type: "cursor", cell: null }));
+
+    harness.session.dispose();
+  });
+
+  test("nothing is published while the socket is down, and no stale cell is replayed", () => {
+    const harness = createRoomHarness();
+
+    harness.session.setCursor?.({ x: 0, y: 0, z: 0 });
+    expect(harness.sockets[0]?.sent).toEqual([]);
+
+    // The pointer moved on while there was nowhere to send it; the room hears
+    // where it is *now*, never where it was.
+    harness.sockets[0]?.emitOpen();
+    harness.session.setCursor?.({ x: 3, y: 0, z: 0 });
+
+    expect(harness.sockets[0]?.sent).toEqual([JSON.stringify({ type: "cursor", cell: { x: 3, y: 0, z: 0 } })]);
+
+    harness.session.dispose();
+  });
+
+  test("disposing drops the frame that was still waiting", async () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitOpen();
+
+    harness.session.setCursor?.({ x: 0, y: 0, z: 0 });
+    harness.session.setCursor?.({ x: 1, y: 0, z: 0 });
+    harness.session.dispose();
+    await Bun.sleep(120);
+
+    expect(harness.sockets[0]?.sent).toHaveLength(1);
+    expect(harness.sockets[0]?.closed).toBe(true);
+  });
+
+  test("keeps where the others point without re-rendering anything", () => {
+    const harness = createRoomHarness();
+    const before = harness.session.getSnapshot();
+
+    harness.sockets[0]?.emitMessage({ type: "cursor", playerId: "p2", cell: { x: 1, y: 2, z: 3 } });
+
+    // A pointer moves with every beetle of the mouse, so a pointer frame may
+    // not touch the snapshot: the HUD would re-render at that rate.
+    expect(harness.session.getSnapshot()).toBe(before);
+    expect(harness.session.cursorFeed?.cursors.get("p2")?.cell).toEqual({ x: 1, y: 2, z: 3 });
+
+    harness.session.dispose();
+  });
+
+  test("keeps the seat of a player who stopped pointing, with no cell", () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitMessage({ type: "cursor", playerId: "p2", cell: { x: 1, y: 2, z: 3 } });
+
+    harness.sockets[0]?.emitMessage({ type: "cursor", playerId: "p2", cell: null });
+
+    expect(harness.session.cursorFeed?.cursors.get("p2")?.cell).toBeNull();
+
+    harness.session.dispose();
+  });
+
+  test("never takes its own pointer back from the server", () => {
+    const harness = createRoomHarness();
+
+    harness.sockets[0]?.emitMessage({ type: "cursor", playerId: "p1", cell: { x: 1, y: 2, z: 3 } });
+
+    expect(harness.session.cursorFeed?.cursors.size).toBe(0);
+
+    harness.session.dispose();
+  });
+
+  test("forgets the pointer of a player who left the room", () => {
+    const harness = createRoomHarness();
+    harness.sockets[0]?.emitMessage({ type: "cursor", playerId: "p2", cell: { x: 1, y: 2, z: 3 } });
+    expect(harness.session.cursorFeed?.cursors.size).toBe(1);
+
+    harness.sockets[0]?.emitMessage({ type: "room", room: roomDto("ROOM01", "game-1", [player("p1", "Ada", true)]) });
+
+    expect(harness.session.cursorFeed?.cursors.size).toBe(0);
+
+    harness.session.dispose();
+  });
+
+  test("an unreadable pointer is treated as no pointer", () => {
+    const harness = createRoomHarness();
+
+    harness.sockets[0]?.emitMessage({ type: "cursor", playerId: "p2", cell: { x: 1, y: 2 } });
+
+    // A marker drawn from a half-read cell would land in the wrong place; none
+    // is better than one in the wrong place.
+    expect(harness.session.cursorFeed?.cursors.size).toBe(0);
+
+    harness.session.dispose();
+  });
+});
+
+/** A room attachment as returned by the create/join endpoints. */
+function attachment(state: ClientGameState): RoomJoinDto {
   return {
-    id: "game-1",
+    room: roomDto("ROOM01", "game-1", [player("p1", "Ada", true)]),
+    player: player("p1", "Ada", true),
+    game: gameDto(state),
+  };
+}
+
+function player(id: string, name: string, connected: boolean): PlayerDto {
+  return testPlayer({ id, name, connected });
+}
+
+function roomDto(id: string, gameId: string, players: readonly PlayerDto[]): RoomDto {
+  return testRoom({ id, gameId, players, name: `${players[0]?.name ?? "Player"}'s room` });
+}
+
+interface RoomHarness {
+  readonly session: GameSession;
+  readonly sockets: FakeSocket[];
+  readonly requests: { url: string; method: string; body: string }[];
+  readonly state: ClientGameState;
+}
+
+/** Builds a room-attached session whose only HTTP route is the restart. */
+function createRoomHarness(): RoomHarness {
+  const sockets: FakeSocket[] = [];
+  const requests: { url: string; method: string; body: string }[] = [];
+  const first = createGame(presetConfig("tiny", { seed: 5 }));
+  const second = createGame(presetConfig("tiny", { seed: 11 }));
+
+  const fetchStub: FetchLike = async (url, init) => {
+    requests.push({ url, method: init?.method ?? "GET", body: String(init?.body ?? "") });
+    if (url.endsWith("/api/rooms/ROOM01/restart")) {
+      return jsonResponse({
+        room: roomDto("ROOM01", "game-2", [player("p1", "Ada", true)]),
+        game: gameDto(toClientView(second), "game-2"),
+      });
+    }
+    return jsonResponse({ error: { code: "not_found", message: `no route for ${url}` } }, 404);
+  };
+
+  const session = createRemoteSession({
+    room: attachment(toClientView(first)),
+    deps: {
+      fetch: fetchStub,
+      openSocket: (url) => {
+        const socket = new FakeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      baseUrl: "http://game.test",
+      reconnectBaseMs: 1,
+    },
+  });
+
+  return { session, sockets, requests, state: toClientView(first) };
+}
+
+/** A DTO envelope with a stable id/revision, matching the server contract. */
+function gameDto(state: ClientGameState, id = "game-1") {
+  return {
+    id,
     revision: 1,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",

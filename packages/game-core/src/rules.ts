@@ -6,6 +6,10 @@ import { addVec3 } from "./vec3";
 export const DEFAULT_RULES = Object.freeze({
   /** The opening reveal of a game never hits a mine. */
   firstRevealSafe: true,
+  /** Opening a mine ends the game. */
+  minesFatal: true,
+  /** Free reveals are an aid, so they are off unless a board asks for them. */
+  freeReveals: 0,
 });
 
 /**

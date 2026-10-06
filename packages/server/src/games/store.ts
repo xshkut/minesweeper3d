@@ -43,8 +43,19 @@ export interface GameStore {
   get(id: string): StoredGame | undefined;
   /** Replaces an existing record; throws when it was never created. */
   save(game: StoredGame): StoredGame;
+  /**
+   * Installs an already-built record, replacing one with the same id.
+   *
+   * This is the hydration path, not a way to write games: it skips the
+   * new/existing checks `create` and `save` enforce, and it must not be
+   * observed as a change by a persistence layer (a restored record came from
+   * the durable copy in the first place).
+   */
+  restore(game: StoredGame): StoredGame;
   /** @returns `true` when a record was removed */
   delete(id: string): boolean;
+  /** Every record, in insertion order; the snapshot writer walks this. */
+  list(): readonly StoredGame[];
   /** Number of stored games; useful for logging and tests. */
   readonly size: number;
 }
@@ -74,8 +85,17 @@ export function createInMemoryGameStore(): GameStore {
       return game;
     },
 
+    restore(game) {
+      games.set(game.id, game);
+      return game;
+    },
+
     delete(id) {
       return games.delete(id);
+    },
+
+    list() {
+      return [...games.values()];
     },
 
     get size() {

@@ -1,6 +1,6 @@
 import { type Grid, neighboursOf } from "./grid";
 import { randomInt } from "./random";
-import type { Cell, CellIndex } from "./types";
+import type { Cell, CellIndex, CellMark } from "./types";
 
 /** Result of laying out mines: the occupied offsets plus the advanced RNG state. */
 export interface MineLayout {
@@ -75,9 +75,42 @@ export function createCells(grid: Grid, mineOffsets: readonly number[], adjacenc
       adjacentMines: adjacency[offset] ?? 0,
       isRevealed: false,
       isFlagged: false,
+      isQuestioned: false,
+      isProbed: false,
     };
   }
   return cells;
+}
+
+/**
+ * The annotation of a cell, read from its two mutually exclusive booleans.
+ *
+ * Every consumer that cares *which* annotation is on a cell should go through
+ * this rather than testing the flags itself, so the "never both" invariant only
+ * has to hold here.
+ */
+export function markOf(cell: Pick<Cell, "isFlagged" | "isQuestioned">): CellMark {
+  if (cell.isFlagged) return "flag";
+  if (cell.isQuestioned) return "question";
+  return "none";
+}
+
+/**
+ * The annotation a right click puts on a cell next.
+ *
+ * The cycle is the classic one - unknown, claimed mine, doubt, unknown - so a
+ * player who marks a cell by mistake gets back to a clean cell with two more
+ * clicks and never has to undo anything.
+ */
+export function nextMark(mark: CellMark): CellMark {
+  switch (mark) {
+    case "none":
+      return "flag";
+    case "flag":
+      return "question";
+    case "question":
+      return "none";
+  }
 }
 
 /** Indices of all mines on the board. */

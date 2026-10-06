@@ -51,9 +51,15 @@ export function registerGameRoutes(router: Router, dependencies: GameRoutesDepen
     return jsonResponse({ game: toGameDto(update.game), events: update.events });
   });
 
-  router.post("/api/games/:id/flag", async ({ params, request }) => {
+  router.post("/api/games/:id/mark", async ({ params, request }) => {
     const body = await readJsonBody(request);
-    const update = guard(() => service.toggleFlag(gameIdOf(params), cellOf(body)));
+    const update = guard(() => service.cycleMark(gameIdOf(params), cellOf(body)));
+    return jsonResponse({ game: toGameDto(update.game), events: update.events });
+  });
+
+  router.post("/api/games/:id/probe", async ({ params, request }) => {
+    const body = await readJsonBody(request);
+    const update = guard(() => service.probe(gameIdOf(params), cellOf(body)));
     return jsonResponse({ game: toGameDto(update.game), events: update.events });
   });
 }

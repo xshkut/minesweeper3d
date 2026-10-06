@@ -43,8 +43,22 @@ export const DEFAULT_ORBIT_LIMITS: OrbitLimits = Object.freeze({
 
 /** Pointer deltas are divided by this, exactly like the prototype did. */
 const DRAG_DIVISOR = 100;
-/** Wheel deltas are divided by this, exactly like the prototype did. */
-const ZOOM_DIVISOR = 40;
+/**
+ * Fraction of the current distance one wheel notch moves the camera.
+ *
+ * The prototype divided the raw delta by 40, i.e. a notch on a 5x5x5 board
+ * (radius ~130) moved the camera 2.5 units - about 2%, which felt sluggish and
+ * was asymmetric: the same step is a huge jump once you are zoomed in close.
+ * Multiplying instead makes every notch the same *fraction*, so zooming in and
+ * out feel alike at any distance.
+ */
+const ZOOM_STEP = 0.15;
+/** Wheel delta, in pixels, that counts as one notch of {@link ZOOM_STEP}. */
+const ZOOM_NOTCH = 100;
+/** Fallback height in pixels of one page, for `DOM_DELTA_PAGE` wheel events. */
+const WHEEL_PAGE_HEIGHT = 800;
+/** Height in pixels of one text line, for `DOM_DELTA_LINE` wheel events. */
+export const WHEEL_LINE_HEIGHT = 16;
 const EPSILON = 1e-6;
 const TWO_PI = Math.PI * 2;
 
@@ -125,17 +139,52 @@ export function applyOrbitInput(
     polar = clampPolar(polar + input.deltaY / DRAG_DIVISOR, limits);
   }
   if (input.zoom !== 0) {
-    radius = clampRadius(radius + input.zoom / ZOOM_DIVISOR, limits);
+    radius = clampRadius(radius * Math.exp((input.zoom / ZOOM_NOTCH) * ZOOM_STEP), limits);
   }
 
   if (azimuth === orbit.azimuth && polar === orbit.polar && radius === orbit.radius) return orbit;
   return { azimuth, polar, radius, target: orbit.target };
 }
 
+/**
+ * Zoom delta equivalent to spreading or closing two fingers by `ratio`.
+ *
+ * The wheel and a pinch have to end up in the same unit or {@link applyOrbitInput}
+ * could not tell them apart. One wheel notch is `ZOOM_NOTCH` pixels into
+ * `ZOOM_STEP` of radius, and a pinch of `ratio` has to scale the radius by
+ * exactly `1 / ratio` - a finger that doubles the distance between two fingers
+ * halves the distance to the board - so the ratio is turned inside out with a
+ * logarithm rather than approximated per frame. Applying that per move event
+ * composes: the deltas of a whole gesture add up to the log of its total ratio.
+ *
+ * A non-positive or non-finite ratio means the two touches are on top of each
+ * other, where a pinch has no meaning; it returns `0`, which moves nothing.
+ */
+export function zoomForPinch(ratio: number): number {
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio === 1) return 0;
+  return -(Math.log(ratio) * ZOOM_NOTCH) / ZOOM_STEP;
+}
+
 /** Keeps the framing but looks at another point (right click on a cell). */
 export function withTarget(orbit: OrbitState, target: Point3): OrbitState {
   if (orbit.target.x === target.x && orbit.target.y === target.y && orbit.target.z === target.z) return orbit;
   return { ...orbit, target };
+}
+
+/**
+ * Converts a wheel event's raw delta into pixels.
+ *
+ * Browsers disagree about the unit: Chrome and Safari report pixels
+ * (`deltaMode === 0`, ~100 per notch), Firefox reports *lines*
+ * (`deltaMode === 1`, ~3 per notch) and a few report pages (`deltaMode === 2`).
+ * Passing them all through unchanged made the same gesture zoom ~30x weaker in
+ * Firefox, so the delta is scaled by this module before it reaches
+ * {@link applyOrbitInput}.
+ */
+export function normalizeWheelDelta(deltaY: number, deltaMode: number, pageHeight = 0): number {
+  if (deltaMode === 1) return deltaY * WHEEL_LINE_HEIGHT;
+  if (deltaMode === 2) return deltaY * (pageHeight > 0 ? pageHeight : WHEEL_PAGE_HEIGHT);
+  return deltaY;
 }
 
 /** Clamps an elevation to the configured band. */

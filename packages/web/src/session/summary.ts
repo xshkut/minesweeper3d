@@ -14,6 +14,12 @@ export interface GameSummary {
   readonly revealed: number;
   /** Cells that must be revealed to win. */
   readonly total: number;
+  /** Covered cells carrying a question mark. */
+  readonly questions: number;
+  /** Free reveals still available; `0` when the aid is off. */
+  readonly freeRevealsLeft: number;
+  /** Free reveals the board was created with; `0` turns the row off. */
+  readonly freeReveals: number;
   /** Reveal progress in `0..1`. */
   readonly progress: number;
 }
@@ -31,6 +37,9 @@ export function summarize(state: ClientGameState | null): GameSummary | null {
     flags: state.flagCount,
     revealed: state.revealedCount,
     total,
+    questions: state.cells.reduce((count, cell) => (cell.isQuestioned ? count + 1 : count), 0),
+    freeRevealsLeft: state.freeRevealsLeft,
+    freeReveals: state.config.freeReveals,
     progress: total === 0 ? 1 : Math.min(1, state.revealedCount / total),
   };
 }

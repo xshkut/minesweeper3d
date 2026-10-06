@@ -45,9 +45,12 @@ describe("presets", () => {
       mineCount: 10,
       seed: 42,
       firstRevealSafe: true,
+      minesFatal: true,
+      freeReveals: 0,
     });
 
     expect(presetConfig("classic", { seed: 42, firstRevealSafe: false }).firstRevealSafe).toBe(false);
+    expect(presetConfig("classic", { seed: 42, freeReveals: 3 }).freeReveals).toBe(3);
   });
 
   it("draws a fresh seed when none is given", () => {

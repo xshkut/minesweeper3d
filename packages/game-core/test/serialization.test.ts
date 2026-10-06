@@ -1,11 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
+  cycleMark,
   InvalidGameStateError,
   parseGameConfig,
   parseGameState,
+  probeCell,
   revealCell,
   serializeGame,
-  toggleFlag,
   validateGameConfig,
   vec3,
 } from "../src/index";
@@ -17,13 +18,36 @@ describe("game config validation", () => {
 
     expect(result).toEqual({
       ok: true,
-      config: { size: vec3(5, 5, 5), mineCount: 10, seed: 42, firstRevealSafe: true },
+      config: {
+        size: vec3(5, 5, 5),
+        mineCount: 10,
+        seed: 42,
+        firstRevealSafe: true,
+        minesFatal: true,
+        freeReveals: 0,
+      },
     });
   });
 
   it("defaults the safe opening rule when it is omitted", () => {
     const result = validateGameConfig({ size: vec3(3, 3, 3), mineCount: 1, seed: 1 });
     expect(result.ok && result.config.firstRevealSafe).toBe(true);
+  });
+
+  it("defaults mines to fatal and keeps an explicit choice", () => {
+    const omitted = validateGameConfig({ size: vec3(3, 3, 3), mineCount: 1, seed: 1 });
+    expect(omitted.ok && omitted.config.minesFatal).toBe(true);
+
+    const optional = validateGameConfig({ size: vec3(3, 3, 3), mineCount: 1, seed: 1, minesFatal: false });
+    expect(optional.ok && optional.config.minesFatal).toBe(false);
+  });
+
+  it("defaults free reveals off and keeps an explicit count", () => {
+    const omitted = validateGameConfig({ size: vec3(3, 3, 3), mineCount: 1, seed: 1 });
+    expect(omitted.ok && omitted.config.freeReveals).toBe(0);
+
+    const optional = validateGameConfig({ size: vec3(3, 3, 3), mineCount: 1, seed: 1, freeReveals: 5 });
+    expect(optional.ok && optional.config.freeReveals).toBe(5);
   });
 
   it("normalises the seed", () => {
@@ -44,6 +68,11 @@ describe("game config validation", () => {
       [{ size: vec3(3, 3, 1.5), mineCount: 1, seed: 1 }, /size/],
       [{ size: "3x3x3", mineCount: 1, seed: 1 }, /size/],
       [{ size: vec3(2, 2, 2), mineCount: 8, seed: 1 }, /at least one safe cell/],
+      [{ size: vec3(3, 3, 3), mineCount: 1, seed: 1, freeReveals: -1 }, /freeReveals/],
+      [{ size: vec3(3, 3, 3), mineCount: 1, seed: 1, freeReveals: 1.5 }, /freeReveals/],
+      [{ size: vec3(3, 3, 3), mineCount: 1, seed: 1, freeReveals: "3" }, /freeReveals/],
+      // One charge is spent per cell, so more charges than cells cannot be used.
+      [{ size: vec3(2, 2, 2), mineCount: 1, seed: 1, freeReveals: 9 }, /freeReveals/],
     ];
 
     for (const [input, pattern] of cases) {
@@ -69,12 +98,50 @@ describe("state serialisation", () => {
     expect(snapshot(restored)).toBe(snapshot(state));
   });
 
+  it("carries question marks, probes and the charge budget across a round trip", () => {
+    const state = revealCell(game(vec3(3, 3, 3), 2, { seed: 4, freeReveals: 3 }), at(0, 0, 0)).state;
+    // A question mark on one cell, a probe on another, so both new fields are
+    // exercised by the same payload.
+    const questioned = cycleMark(state, at(2, 2, 2)).state;
+    const probed = probeCell(cycleMark(questioned, at(2, 2, 2)).state, at(2, 2, 1)).state;
+    expect(probed.freeRevealsLeft).toBe(2);
+    expect(probed.cells.filter((cell) => cell.isQuestioned)).toHaveLength(1);
+
+    const restored = parseGameState(JSON.parse(serializeGame(probed)));
+
+    expect(snapshot(restored)).toBe(snapshot(probed));
+    expect(restored.freeRevealsLeft).toBe(2);
+  });
+
+  it("rejects a state that claims to have spent more charges than it was granted", () => {
+    const valid = JSON.parse(serializeGame(game(vec3(3, 3, 3), 1, { seed: 1, freeReveals: 1 }))) as Record<
+      string,
+      unknown
+    >;
+
+    expect(() => parseGameState({ ...valid, freeRevealsLeft: 2 })).toThrow(/freeRevealsLeft/);
+    expect(() => parseGameState({ ...valid, freeRevealsLeft: -1 })).toThrow(/freeRevealsLeft/);
+  });
+
+  it("rejects a cell that is both flagged and questioned", () => {
+    const valid = JSON.parse(serializeGame(game(vec3(3, 3, 3), 1, { seed: 1 }))) as Record<string, unknown>;
+    const cells = valid["cells"] as unknown[];
+    const first = cells[0] as Record<string, unknown>;
+
+    expect(() =>
+      parseGameState({
+        ...valid,
+        cells: [{ ...first, isFlagged: true, isQuestioned: true }, ...cells.slice(1)],
+      }),
+    ).toThrow(/both flagged and questioned/);
+  });
+
   it("survives a round trip after flags and a loss", () => {
     const lost = revealCell(
       gameWithMines(vec3(3, 3, 3), [at(0, 0, 0)], { firstRevealSafe: false }),
       at(0, 0, 0),
     ).state;
-    const flagged = toggleFlag(lost, at(1, 1, 1)).state;
+    const flagged = cycleMark(lost, at(1, 1, 1)).state;
     const restored = parseGameState(JSON.parse(serializeGame(flagged)));
 
     expect(snapshot(restored)).toBe(snapshot(flagged));

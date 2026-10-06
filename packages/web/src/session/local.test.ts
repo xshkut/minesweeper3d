@@ -54,13 +54,13 @@ describe("local session", () => {
 
   test("flags toggle and are reflected in the counters", () => {
     const session = createLocalSession({ presetId: "tiny", seed: 3 });
-    session.toggleFlag({ x: 0, y: 0, z: 0 });
+    session.cycleMark({ x: 0, y: 0, z: 0 });
 
     const flagged = session.getSnapshot().state?.cells.find((cell) => cell.index.x === 0 && cell.index.y === 0 && cell.index.z === 0);
     expect(flagged?.isFlagged).toBe(true);
     expect(session.getSnapshot().state?.flagCount).toBe(1);
 
-    session.toggleFlag({ x: 0, y: 0, z: 0 });
+    session.cycleMark({ x: 0, y: 0, z: 0 });
     expect(session.getSnapshot().state?.flagCount).toBe(0);
 
     session.dispose();
@@ -112,7 +112,7 @@ describe("local session", () => {
     expect(notifications).toBe(1);
 
     unsubscribe();
-    session.toggleFlag({ x: 2, y: 2, z: 2 });
+    session.cycleMark({ x: 2, y: 2, z: 2 });
     expect(notifications).toBe(1);
 
     session.dispose();

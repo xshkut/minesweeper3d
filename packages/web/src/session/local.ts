@@ -7,10 +7,11 @@
 import {
   DEFAULT_PRESET_ID,
   createGame,
+  cycleMark,
   presetConfig,
+  probeCell,
   revealCell,
   toClientView,
-  toggleFlag,
 } from "@minesweeper3d/game-core";
 import type { CellIndex, GameEvent, GameState } from "@minesweeper3d/game-core";
 import type { GameSession, NewGameOptions, SessionSnapshot } from "./types";
@@ -20,6 +21,8 @@ export interface LocalSessionOptions {
   readonly presetId?: string;
   readonly seed?: number;
   readonly firstRevealSafe?: boolean;
+  /** Charges the free-reveal aid grants; `0`, the default, turns it off. */
+  readonly freeReveals?: number;
 }
 
 /**
@@ -57,6 +60,20 @@ export function createLocalSession(options: LocalSessionOptions = {}): GameSessi
     for (const listener of [...listeners]) listener();
   }
 
+  /** Applies one pure transition, ignoring the identical state of a no-op. */
+  function apply(
+    action: (state: GameState, cell: CellIndex) => { state: GameState; events: readonly GameEvent[] },
+    cell: CellIndex,
+  ): void {
+    if (disposed) return;
+    const transition = action(game, cell);
+    if (transition.state === game) return;
+    game = transition.state;
+    events = transition.events;
+    error = undefined;
+    notify();
+  }
+
   return {
     kind: "local",
 
@@ -72,31 +89,28 @@ export function createLocalSession(options: LocalSessionOptions = {}): GameSessi
     },
 
     reveal(cell: CellIndex): void {
-      if (disposed) return;
-      const transition = revealCell(game, cell);
-      // The engine returns the very same state for ignored actions.
-      if (transition.state === game) return;
-      game = transition.state;
-      events = transition.events;
-      error = undefined;
-      notify();
+      // Reveals go through `apply` too; the engine returns the very same state
+      // for an ignored action, which is what keeps a stray click cheap.
+      apply(revealCell, cell);
     },
 
-    toggleFlag(cell: CellIndex): void {
-      if (disposed) return;
-      const transition = toggleFlag(game, cell);
-      if (transition.state === game) return;
-      game = transition.state;
-      events = transition.events;
-      error = undefined;
-      notify();
+    cycleMark(cell: CellIndex): void {
+      apply(cycleMark, cell);
+    },
+
+    probe(cell: CellIndex): void {
+      apply(probeCell, cell);
     },
 
     newGame(next: NewGameOptions = {}): void {
       if (disposed) return;
       const requested = next.presetId ?? presetId;
+      // A new board gets a fresh budget, but a caller that says nothing keeps
+      // whatever this session was told to play with.
+      const freeReveals = next.freeReveals ?? options.freeReveals;
       const nextOptions: LocalSessionOptions = {
         ...(next.seed === undefined ? {} : { seed: next.seed }),
+        ...(freeReveals === undefined ? {} : { freeReveals }),
         ...(options.firstRevealSafe === undefined ? {} : { firstRevealSafe: options.firstRevealSafe }),
       };
       error = undefined;
@@ -135,7 +149,7 @@ interface StartedGame {
  */
 function startGame(
   presetId: string,
-  options: { seed?: number; firstRevealSafe?: boolean },
+  options: { seed?: number; firstRevealSafe?: boolean; freeReveals?: number },
   onFailure: FailureReporter,
 ): StartedGame {
   const build = (id: string): GameState =>
@@ -143,6 +157,7 @@ function startGame(
       presetConfig(id, {
         ...(options.seed === undefined ? {} : { seed: options.seed }),
         ...(options.firstRevealSafe === undefined ? {} : { firstRevealSafe: options.firstRevealSafe }),
+        ...(options.freeReveals === undefined ? {} : { freeReveals: options.freeReveals }),
       }),
     );
 

@@ -17,6 +17,10 @@ import { createLogger, NOOP_SINK } from "../src/logger";
 import type { LogLevel, Logger } from "../src/logger";
 import { createRealtimeHub } from "../src/realtime/hub";
 import type { RealtimeHub } from "../src/realtime/hub";
+import { createRoomService } from "../src/rooms/service";
+import type { RoomService } from "../src/rooms/service";
+import { createInMemoryRoomStore } from "../src/rooms/store";
+import type { RoomStore } from "../src/rooms/store";
 import type { StaticHandler } from "../src/static";
 
 /** Repository root, derived from this file's location (`packages/server/test`). */
@@ -49,9 +53,16 @@ export interface TestServerOptions {
   readonly logger?: Logger;
   readonly service?: GameService;
   readonly store?: GameStore;
+  readonly rooms?: RoomService;
+  readonly roomStore?: RoomStore;
   readonly staticHandler?: StaticHandler;
   /** ISO clock injected into a fresh service. */
   readonly now?: () => string;
+  /** Deterministic player ids / room codes injected into a fresh room service. */
+  readonly generateId?: () => string;
+  readonly generateRoomId?: () => string;
+  /** Player limit of a fresh room service. */
+  readonly maxPlayers?: number;
 }
 
 /** A running server plus the collaborators a test may want to poke at. */
@@ -60,6 +71,8 @@ export interface TestServer {
   readonly port: number;
   readonly service: GameService;
   readonly store: GameStore;
+  readonly rooms: RoomService;
+  readonly roomStore: RoomStore;
   readonly hub: RealtimeHub;
   readonly logger: Logger;
   readonly app: App;
@@ -74,9 +87,22 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
   const service =
     options.service ??
     createGameService({ store, logger, ...(options.now === undefined ? {} : { now: options.now }) });
+  const roomStore = options.roomStore ?? createInMemoryRoomStore();
+  const rooms =
+    options.rooms ??
+    createRoomService({
+      store: roomStore,
+      games: service,
+      logger,
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.generateId === undefined ? {} : { generateId: options.generateId }),
+      ...(options.generateRoomId === undefined ? {} : { generateRoomId: options.generateRoomId }),
+      ...(options.maxPlayers === undefined ? {} : { maxPlayers: options.maxPlayers }),
+    });
   const hub = createRealtimeHub({ logger });
   const app = createApp({
     service,
+    rooms,
     logger,
     hub,
     config: { webDist: options.webDist ?? missingDistDir(), version: "test" },
@@ -93,6 +119,8 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
     port,
     service,
     store,
+    rooms,
+    roomStore,
     hub,
     logger,
     app,
@@ -102,6 +130,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
       // Order matters: Bun's `server.stop(true)` does not resolve when the
       // sockets were terminated server-side just before, so the listener goes
       // down first and the hub is only cleaned up afterwards.
+      rooms.close();
       service.close();
       await server.stop(true);
       hub.closeAll();

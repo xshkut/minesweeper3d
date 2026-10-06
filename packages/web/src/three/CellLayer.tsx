@@ -8,37 +8,47 @@
  */
 import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { ReactElement } from "react";
-import { BoxGeometry, Color, MeshBasicMaterial, Object3D } from "three";
+import { Color, MeshStandardMaterial, Object3D } from "three";
 import type { InstancedMesh, Texture } from "three";
+import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { createGrid } from "@minesweeper3d/game-core";
 import type { CellIndex, ClientGameState } from "@minesweeper3d/game-core";
-import { BOARD_COLORS, CELL_SIZE, cellCenter } from "./board";
+import { BOARD_COLORS, CELL_SIZE, CORNER_RADIUS, CORNER_SEGMENTS, cellCenter } from "./board";
+import { CellMarks } from "./CellMarks";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { HoverQuestion, HoverTint } from "./HoverIndicator";
+import { HoverTint } from "./HoverIndicator";
 import { MineModel } from "./MineModel";
 import { GlyphProvider, NumberGlyphs } from "./NumberGlyphs";
+import { PlayerCursors } from "./PlayerCursors";
 import { useBoardPointer } from "./useBoardPointer";
-import type { BlockedReason, BoardPointerHandlers } from "./useBoardPointer";
+import type { BlockedReason, BoardPointerHandlers, BoardTool } from "./useBoardPointer";
 import type { HoverSlot } from "./hover";
 import type { PointerState } from "./pointerState";
 import type { Point3 } from "./orbit";
+import type { PresenceView } from "../session/presence";
 
 /** Props of {@link CellLayer}. */
 export interface CellLayerProps {
   readonly state: ClientGameState;
   readonly texture: Texture;
-  readonly flagMode: boolean;
+  readonly tool: BoardTool;
   readonly hover: HoverSlot;
   readonly pointer: PointerState;
   readonly onReveal: (cell: CellIndex) => void;
-  readonly onFlag: (cell: CellIndex) => void;
+  readonly onMark: (cell: CellIndex) => void;
+  readonly onProbe: (cell: CellIndex) => void;
   readonly onBlocked: (cell: CellIndex, reason: BlockedReason) => void;
   readonly onRecenter: (point: Point3) => void;
+  /** The other seats of the room; absent in a private game. */
+  readonly presence?: PresenceView | undefined;
+  /** Reports where this player is pointing, when the session cares. */
+  readonly onCursor?: ((cell: CellIndex | null) => void) | undefined;
 }
 
 /** Renders the board of the current state. Must be inside `<Canvas>`. */
 export function CellLayer(props: CellLayerProps): ReactElement {
-  const { state, texture, flagMode, hover, pointer, onReveal, onFlag, onBlocked, onRecenter } = props;
+  const { state, texture, tool, hover, pointer, onReveal, onMark, onProbe, onBlocked, onRecenter, presence, onCursor } =
+    props;
   const size = state.config.size;
   const won = state.status === "won";
 
@@ -52,17 +62,33 @@ export function CellLayer(props: CellLayerProps): ReactElement {
     state,
     hover,
     pointer,
-    flagMode,
+    tool,
     onReveal,
-    onFlag,
+    onMark,
+    onProbe,
     onBlocked,
     onRecenter,
+    onCursor,
   });
 
-  const geometry = useMemo(() => new BoxGeometry(CELL_SIZE, CELL_SIZE, CELL_SIZE), []);
-  const coveredMaterial = useMemo(() => new MeshBasicMaterial({ map: texture }), [texture]);
+  // Soft corners are what make the cubes read as objects rather than as a grid.
+  // The geometry is built once per board, not per cell: all covered cubes share
+  // it through the instanced mesh below.
+  const geometry = useMemo(
+    () => new RoundedBoxGeometry(CELL_SIZE, CELL_SIZE, CELL_SIZE, CORNER_SEGMENTS, CORNER_RADIUS),
+    [],
+  );
+  // Standard rather than basic material: a lit surface is what actually shows the
+  // round-over, and the scene already carries the lights for it.
+  const coveredMaterial = useMemo(
+    () => new MeshStandardMaterial({ map: texture, roughness: 0.42, metalness: 0.05 }),
+    [texture],
+  );
   const coveredColor = useMemo(() => new Color(BOARD_COLORS.covered), []);
   const flagColor = useMemo(() => new Color(BOARD_COLORS.flag), []);
+  const questionColor = useMemo(() => new Color(BOARD_COLORS.questioned), []);
+  const probedMineColor = useMemo(() => new Color(BOARD_COLORS.probedMine), []);
+  const probedSafeColor = useMemo(() => new Color(BOARD_COLORS.probedSafe), []);
 
   useEffect(
     () => () => {
@@ -81,8 +107,13 @@ export function CellLayer(props: CellLayerProps): ReactElement {
         count={state.cells.length}
         geometry={geometry}
         material={coveredMaterial}
-        coveredColor={coveredColor}
-        flagColor={flagColor}
+        tint={{
+          covered: coveredColor,
+          flag: flagColor,
+          question: questionColor,
+          probedMine: probedMineColor,
+          probedSafe: probedSafeColor,
+        }}
         handlers={handlers}
       />
 
@@ -92,7 +123,7 @@ export function CellLayer(props: CellLayerProps): ReactElement {
         <Suspense fallback={null}>
           <GlyphProvider>
             <NumberGlyphs state={state} />
-            <HoverQuestion hover={hover} size={size} />
+            <CellMarks state={state} />
           </GlyphProvider>
         </Suspense>
       </ErrorBoundary>
@@ -100,18 +131,43 @@ export function CellLayer(props: CellLayerProps): ReactElement {
       {mines.map((cell) => (
         <MineModel key={grid.offsetOf(cell.index)} cell={cell.index} size={size} won={won} />
       ))}
+
+      {presence !== undefined && presence.seats.length > 0 && (
+        <PlayerCursors feed={presence.feed} seats={presence.seats} size={size} />
+      )}
     </group>
   );
+}
+
+/** Per-state tints of a covered cube, one `Color` per state. */
+interface CoveredTint {
+  readonly covered: Color;
+  readonly flag: Color;
+  readonly question: Color;
+  readonly probedMine: Color;
+  readonly probedSafe: Color;
 }
 
 interface CoveredCellsProps {
   readonly state: ClientGameState;
   readonly count: number;
-  readonly geometry: BoxGeometry;
-  readonly material: MeshBasicMaterial;
-  readonly coveredColor: Color;
-  readonly flagColor: Color;
+  readonly geometry: RoundedBoxGeometry;
+  readonly material: MeshStandardMaterial;
+  readonly tint: CoveredTint;
   readonly handlers: BoardPointerHandlers;
+}
+
+/**
+ * Tint of one covered cube.
+ *
+ * A probe verdict outranks a mark: the charge bought a fact about the board and
+ * the flag beside it would only obscure it.
+ */
+function tintOf(cell: { isFlagged: boolean; isQuestioned: boolean; isProbed: boolean; hasMine: boolean }, tint: CoveredTint): Color {
+  if (cell.isProbed) return cell.hasMine ? tint.probedMine : tint.probedSafe;
+  if (cell.isQuestioned) return tint.question;
+  if (cell.isFlagged) return tint.flag;
+  return tint.covered;
 }
 
 /**
@@ -125,8 +181,7 @@ function CoveredCells({
   count,
   geometry,
   material,
-  coveredColor,
-  flagColor,
+  tint,
   handlers,
 }: CoveredCellsProps): ReactElement {
   const meshRef = useRef<InstancedMesh>(null);
@@ -146,13 +201,13 @@ function CoveredCells({
       scratch.updateMatrix();
 
       mesh.setMatrixAt(offset, scratch.matrix);
-      mesh.setColorAt(offset, cell.isFlagged ? flagColor : coveredColor);
+      mesh.setColorAt(offset, tintOf(cell, tint));
     }
 
     mesh.count = count;
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor !== null) mesh.instanceColor.needsUpdate = true;
-  }, [state, count, scratch, coveredColor, flagColor]);
+  }, [state, count, scratch, tint]);
 
   return (
     <instancedMesh

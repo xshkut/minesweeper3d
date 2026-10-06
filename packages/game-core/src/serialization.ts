@@ -55,6 +55,16 @@ export function validateGameConfig(input: unknown): ConfigValidationResult {
     issues.push("firstRevealSafe must be a boolean");
   }
 
+  const minesFatal = input["minesFatal"] ?? DEFAULT_RULES.minesFatal;
+  if (typeof minesFatal !== "boolean") {
+    issues.push("minesFatal must be a boolean");
+  }
+
+  const freeReveals = input["freeReveals"] ?? DEFAULT_RULES.freeReveals;
+  if (!Number.isInteger(freeReveals) || (freeReveals as number) < 0) {
+    issues.push("freeReveals must be a non-negative integer");
+  }
+
   if (issues.length > 0) return { ok: false, issues };
 
   const config: GameConfig = {
@@ -62,11 +72,17 @@ export function validateGameConfig(input: unknown): ConfigValidationResult {
     mineCount: mineCount as number,
     seed: normalizeSeed(seed as number),
     firstRevealSafe: firstRevealSafe as boolean,
+    minesFatal: minesFatal as boolean,
+    freeReveals: freeReveals as number,
   };
 
   const cellCount = config.size.x * config.size.y * config.size.z;
   if (config.mineCount > cellCount - 1) {
     return { ok: false, issues: [`mineCount must leave at least one safe cell (max ${cellCount - 1})`] };
+  }
+  // A charge is spent one per cell, so more of them than cells cannot be used.
+  if (config.freeReveals > cellCount) {
+    return { ok: false, issues: [`freeReveals cannot exceed the cell count (max ${cellCount})`] };
   }
 
   return { ok: true, config };
@@ -114,12 +130,20 @@ export function parseGameState(input: unknown): GameState {
   const explodedAtRaw = input["explodedAt"];
   const explodedAt = explodedAtRaw === null || explodedAtRaw === undefined ? null : parseCellIndex(explodedAtRaw, "explodedAt");
 
+  const freeRevealsLeft = parseCounter(input["freeRevealsLeft"], "freeRevealsLeft");
+  if (freeRevealsLeft > config.freeReveals) {
+    throw new InvalidGameStateError(
+      `freeRevealsLeft must not exceed the granted ${config.freeReveals}`,
+    );
+  }
+
   return {
     config,
     status,
     cells,
     revealedCount: parseCounter(input["revealedCount"], "revealedCount"),
     flagCount: parseCounter(input["flagCount"], "flagCount"),
+    freeRevealsLeft,
     explodedAt,
     // The generator state is a signed 32 bit integer, unlike the counters.
     rngState: parseInteger(input["rngState"], "rngState"),
@@ -139,12 +163,23 @@ function parseCell(raw: unknown, offset: number, expected: CellIndex): Cell {
     throw new InvalidGameStateError(`cells[${offset}].adjacentMines must be an integer between 0 and 26`);
   }
 
+  const isFlagged = parseBoolean(raw["isFlagged"], `cells[${offset}].isFlagged`);
+  const isQuestioned = parseBoolean(raw["isQuestioned"], `cells[${offset}].isQuestioned`);
+  // Flags and question marks are the same slot seen from two sides; the engine
+  // writes them through one cycling action, so a payload holding both at once
+  // was not produced here and cannot be trusted further.
+  if (isFlagged && isQuestioned) {
+    throw new InvalidGameStateError(`cells[${offset}] cannot be both flagged and questioned`);
+  }
+
   return {
     index: { x: index.x, y: index.y, z: index.z },
     hasMine: parseBoolean(raw["hasMine"], `cells[${offset}].hasMine`),
     adjacentMines: adjacentMines as number,
     isRevealed: parseBoolean(raw["isRevealed"], `cells[${offset}].isRevealed`),
-    isFlagged: parseBoolean(raw["isFlagged"], `cells[${offset}].isFlagged`),
+    isFlagged,
+    isQuestioned,
+    isProbed: parseBoolean(raw["isProbed"], `cells[${offset}].isProbed`),
   };
 }
 

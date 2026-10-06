@@ -197,22 +197,76 @@ describe("actions", () => {
     }
   });
 
-  test("toggles a flag and reports the change", () => {
+  test("cycles a mark and reports the change", () => {
     const { service, store } = makeService();
     const created = service.createGame({ presetId: "tiny", seed: 1, firstRevealSafe: true });
     service.reveal(created.id, vec3(0, 0, 0));
 
     const cell = exposedCoveredCell(stateOf(store, created.id));
-    const flagged = service.toggleFlag(created.id, cell);
+    const flagged = service.cycleMark(created.id, cell);
 
     expect(flagged.changed).toBe(true);
-    expect(flagged.events).toEqual([{ type: "flagChanged", cell, flagged: true }]);
+    expect(flagged.events).toEqual([{ type: "markChanged", cell, mark: "flag" }]);
     expect(stateOf(store, created.id).flagCount).toBe(1);
 
-    const unflagged = service.toggleFlag(created.id, cell);
-    expect(unflagged.events).toEqual([{ type: "flagChanged", cell, flagged: false }]);
+    const questioned = service.cycleMark(created.id, cell);
+    expect(questioned.events).toEqual([{ type: "markChanged", cell, mark: "question" }]);
     expect(stateOf(store, created.id).flagCount).toBe(0);
-    expect(unflagged.game.revision).toBe(3);
+
+    const cleared = service.cycleMark(created.id, cell);
+    expect(cleared.events).toEqual([{ type: "markChanged", cell, mark: "none" }]);
+    expect(cleared.game.revision).toBe(4);
+  });
+
+  test("spends a free reveal and reports what it found", () => {
+    const { service, store } = makeService();
+    const created = service.createGame({
+      config: { size: vec3(3, 3, 3), mineCount: 1, seed: 7, firstRevealSafe: false, freeReveals: 2 },
+    });
+    const mine = stateOf(store, created.id).cells.find((cell) => cell.hasMine);
+    if (mine === undefined) throw new Error("expected a mine");
+
+    const probed = service.probe(created.id, mine.index);
+
+    expect(probed.changed).toBe(true);
+    expect(probed.events).toEqual([{ type: "cellProbed", cell: mine.index, hasMine: true }]);
+    expect(stateOf(store, created.id).freeRevealsLeft).toBe(1);
+
+    // A second look at the same cube is a no-op, so no charge is wasted on it.
+    const repeated = service.probe(created.id, mine.index);
+    expect(repeated.changed).toBe(false);
+    expect(repeated.events).toEqual([]);
+    expect(repeated.game).toBe(probed.game);
+  });
+
+  test("carries free reveals from the request body", () => {
+    const { service, store } = makeService();
+
+    const fromPreset = service.createGame({ presetId: "tiny", seed: 1, freeReveals: 2 });
+    expect(stateOf(store, fromPreset.id).config.freeReveals).toBe(2);
+    expect(stateOf(store, fromPreset.id).freeRevealsLeft).toBe(2);
+
+    const fromConfig = service.createGame({
+      config: { size: vec3(3, 3, 3), mineCount: 1, seed: 1, firstRevealSafe: true, minesFatal: true, freeReveals: 1 },
+    });
+    expect(stateOf(store, fromConfig.id).config.freeReveals).toBe(1);
+
+    // The body wins over the config it is sent with, like `seed` does.
+    const overridden = service.createGame({
+      config: { size: vec3(3, 3, 3), mineCount: 1, seed: 1, firstRevealSafe: true, minesFatal: true, freeReveals: 5 },
+      freeReveals: 3,
+    });
+    expect(stateOf(store, overridden.id).config.freeReveals).toBe(3);
+  });
+
+  test("rejects a free reveal count the engine cannot use", () => {
+    const { service } = makeService();
+
+    expect(() => service.createGame({ presetId: "tiny", freeReveals: -1 })).toThrow(InvalidGameRequestError);
+    expect(() => service.createGame({ presetId: "tiny", freeReveals: 1.5 })).toThrow(InvalidGameRequestError);
+    expect(() => service.createGame({ presetId: "tiny", freeReveals: "2" })).toThrow(InvalidGameRequestError);
+    // The engine's own bound: a tiny board has 27 cells, so 28 charges cannot be used.
+    expect(() => service.createGame({ presetId: "tiny", freeReveals: 28 })).toThrow(InvalidGameRequestError);
   });
 
   test("ignored actions keep the same game object and change nothing", () => {
@@ -242,7 +296,8 @@ describe("actions", () => {
 
     for (const bad of [undefined, null, "0,0,0", { x: 0, y: 0 }, { x: 0.5, y: 0, z: 0 }, { x: "0", y: 0, z: 0 }]) {
       expect(() => service.reveal(created.id, bad)).toThrow(InvalidGameRequestError);
-      expect(() => service.toggleFlag(created.id, bad)).toThrow(InvalidGameRequestError);
+      expect(() => service.cycleMark(created.id, bad)).toThrow(InvalidGameRequestError);
+      expect(() => service.probe(created.id, bad)).toThrow(InvalidGameRequestError);
     }
     expect(store.get(created.id)?.revision).toBe(0);
   });
@@ -252,7 +307,8 @@ describe("actions", () => {
 
     expect(() => service.getGame("missing")).toThrow(GameNotFoundError);
     expect(() => service.reveal("missing", vec3(0, 0, 0))).toThrow(GameNotFoundError);
-    expect(() => service.toggleFlag("missing", vec3(0, 0, 0))).toThrow(GameNotFoundError);
+    expect(() => service.cycleMark("missing", vec3(0, 0, 0))).toThrow(GameNotFoundError);
+    expect(() => service.probe("missing", vec3(0, 0, 0))).toThrow(GameNotFoundError);
   });
 
   test("reports gameWon once every safe cell is revealed", () => {
@@ -290,7 +346,7 @@ describe("subscribers", () => {
 
     unsubscribe();
     const cell = exposedCoveredCell(stateOf(store, created.id));
-    service.toggleFlag(created.id, cell);
+    service.cycleMark(created.id, cell);
     expect(seen).toHaveLength(1);
   });
 

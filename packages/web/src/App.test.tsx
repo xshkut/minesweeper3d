@@ -93,9 +93,15 @@ describe("App", () => {
     await waitFor(() => expect(screen.getByTestId("hud-status").textContent).toBe("Ready"));
     expect(screen.getByTestId("hud-progress").textContent).toBe("0 / 24");
 
-    // "F" toggles flag mode, "R" starts another game.
+    // "F" selects the mark tool, "Q" the detector, "R" starts another game.
     fireEvent.keyDown(document.body, { key: "f" });
-    await waitFor(() => expect(screen.getByTestId("flag-mode").getAttribute("aria-pressed")).toBe("true"));
+    await waitFor(() => expect(screen.getByTestId("tool-flag").getAttribute("aria-pressed")).toBe("true"));
+
+    fireEvent.keyDown(document.body, { key: "q" });
+    await waitFor(() => expect(screen.getByTestId("tool-probe").getAttribute("aria-pressed")).toBe("true"));
+
+    fireEvent.click(screen.getByTestId("tool-reveal"));
+    await waitFor(() => expect(screen.getByTestId("tool-reveal").getAttribute("aria-pressed")).toBe("true"));
 
     fireEvent.keyDown(document.body, { key: "R" });
     await waitFor(() => expect(screen.getByTestId("hud-status").textContent).toBe("Ready"));

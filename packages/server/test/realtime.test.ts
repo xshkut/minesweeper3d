@@ -49,6 +49,11 @@ async function newGame(server: TestServer, body: unknown = { presetId: "tiny", s
   return (response.body as { game: GameDto }).game;
 }
 
+/** A tiny game that grants one free reveal, so a probe over the socket has a charge. */
+async function gameWithFreeReveals(server: TestServer): Promise<GameDto> {
+  return newGame(server, { presetId: "tiny", seed: 1, freeReveals: 1 });
+}
+
 /** Narrows a received frame enough to assert on `type` and read fields. */
 function frame(value: unknown): Record<string, unknown> & { type: string } {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -102,7 +107,7 @@ describe("websocket channel", () => {
     expect(frame(await second.next()).type).toBe("welcome");
 
     // A REST client (or a bot, or a future spectator UI) mutates the game.
-    const response = await postJson(`${server.url}/api/games/${game.id}/flag`, {
+    const response = await postJson(`${server.url}/api/games/${game.id}/mark`, {
       cell: { x: 0, y: 0, z: 0 },
     });
     expect(response.status).toBe(200);
@@ -111,7 +116,7 @@ describe("websocket channel", () => {
       const update = frame(await socket.next());
       expect(update.type).toBe("update");
       expect((update["game"] as GameDto).revision).toBe(1);
-      expect((update["events"] as GameEvent[])[0]?.type).toBe("flagChanged");
+      expect((update["events"] as GameEvent[])[0]?.type).toBe("markChanged");
     }
   });
 
@@ -125,7 +130,7 @@ describe("websocket channel", () => {
     await waitFor(() => server.hub.clientCount(game.id) === 0);
 
     // Nothing is watching, so an HTTP action must not throw or leak a listener.
-    const response = await postJson(`${server.url}/api/games/${game.id}/flag`, {
+    const response = await postJson(`${server.url}/api/games/${game.id}/mark`, {
       cell: { x: 0, y: 0, z: 0 },
     });
     expect(response.status).toBe(200);
@@ -136,7 +141,47 @@ describe("websocket channel", () => {
     expect((welcome["game"] as GameDto).state.flagCount).toBe(1);
   });
 
-  test("flags travel over the socket as well", async () => {
+  test("marks travel over the socket as well, and cycle", async () => {
+    const server = await start();
+    const game = await newGame(server);
+    const socket = await connect(server, game.id);
+    await socket.next();
+
+    socket.send({ type: "mark", cell: { x: 0, y: 0, z: 0 } });
+
+    const update = frame(await socket.next());
+    expect(update.type).toBe("update");
+    expect((update["events"] as GameEvent[])[0]?.type).toBe("markChanged");
+    expect(server.store.get(game.id)?.state.flagCount).toBe(1);
+
+    // One more click turns the flag into a question mark: still an update, but
+    // the cell no longer counts as a flag.
+    socket.send({ type: "mark", cell: { x: 0, y: 0, z: 0 } });
+    const second = frame(await socket.next());
+    expect((second["events"] as GameEvent[])[0]).toEqual({
+      type: "markChanged",
+      cell: { x: 0, y: 0, z: 0 },
+      mark: "question",
+    });
+    expect(server.store.get(game.id)?.state.flagCount).toBe(0);
+  });
+
+  test("a probe travels over the socket and spends a charge", async () => {
+    const server = await start();
+    const game = await gameWithFreeReveals(server);
+    const socket = await connect(server, game.id);
+    await socket.next();
+
+    socket.send({ type: "probe", cell: { x: 0, y: 0, z: 0 } });
+
+    const update = frame(await socket.next());
+    expect(update.type).toBe("update");
+    const events = update["events"] as GameEvent[];
+    expect(events[0]?.type).toBe("cellProbed");
+    expect(server.store.get(game.id)?.state.freeRevealsLeft).toBe(0);
+  });
+
+  test("refuses the retired flag frame instead of guessing", async () => {
     const server = await start();
     const game = await newGame(server);
     const socket = await connect(server, game.id);
@@ -144,10 +189,11 @@ describe("websocket channel", () => {
 
     socket.send({ type: "flag", cell: { x: 0, y: 0, z: 0 } });
 
-    const update = frame(await socket.next());
-    expect(update.type).toBe("update");
-    expect((update["events"] as GameEvent[])[0]?.type).toBe("flagChanged");
-    expect(server.store.get(game.id)?.state.flagCount).toBe(1);
+    const error = frame(await socket.next());
+    expect(error.type).toBe("error");
+    expect(error["code"]).toBe("invalid_message");
+    expect(error["details"]).toEqual(["supported types: reveal, mark, probe, cursor, ping"]);
+    expect(server.store.get(game.id)?.state.flagCount).toBe(0);
   });
 
   test("ignored actions produce no frame at all", async () => {

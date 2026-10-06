@@ -8,7 +8,7 @@
  * generation are injected, so the service is deterministic under test and can
  * be moved to Redis/Postgres by swapping the store.
  */
-import { createGame, formatVec3, revealCell, toggleFlag } from "@minesweeper3d/game-core";
+import { createGame, cycleMark, formatVec3, probeCell, revealCell } from "@minesweeper3d/game-core";
 import type { GameConfig, GameEvent } from "@minesweeper3d/game-core";
 import type { Logger } from "../logger";
 import { GameNotFoundError, GameServiceClosedError, InvalidGameRequestError } from "./errors";
@@ -23,6 +23,8 @@ export interface CreateGameRequest {
   readonly seed?: number;
   /** Overrides the "first reveal is safe" rule. */
   readonly firstRevealSafe?: boolean;
+  /** Charges the free-reveal aid grants; `0` turns the aid off. */
+  readonly freeReveals?: number;
   /** Full rules config; wins over `presetId` when present. */
   readonly config?: GameConfig;
 }
@@ -40,6 +42,9 @@ export interface GameMutationResult {
 /** Receives every accepted mutation of one game. */
 export type GameListener = (result: GameMutationResult) => void;
 
+/** The actions a client can take on a game; `mark` is the flag/question cycle. */
+type GameAction = "reveal" | "mark" | "probe";
+
 /** Injected collaborators; all optional ones have sensible defaults. */
 export interface GameServiceDependencies {
   readonly store: GameStore;
@@ -56,10 +61,22 @@ export interface GameService {
   createGame(request: unknown): StoredGame;
   /** @throws GameNotFoundError when the id is unknown */
   getGame(id: string): StoredGame;
+  /**
+   * Forgets a game and drops its subscribers.
+   *
+   * Boards belong to the room that opened them and nothing else points at them,
+   * so a room takes its boards with it when it goes. Without this the store
+   * would grow by one board per room the server has ever expired.
+   *
+   * @returns `true` when a game was removed
+   */
+  deleteGame(id: string): boolean;
   /** Reveals a cell; a no-op transition is neither persisted nor broadcast. */
   reveal(id: string, cell: unknown): GameMutationResult;
-  /** Toggles a flag; a no-op transition is neither persisted nor broadcast. */
-  toggleFlag(id: string, cell: unknown): GameMutationResult;
+  /** Cycles the mark of a cell (flag, question, none); a no-op is not persisted. */
+  cycleMark(id: string, cell: unknown): GameMutationResult;
+  /** Spends a free reveal on a cell; a no-op transition is not persisted. */
+  probe(id: string, cell: unknown): GameMutationResult;
   /**
    * Registers a listener for accepted mutations of one game.
    *
@@ -103,11 +120,16 @@ export function createGameService(dependencies: GameServiceDependencies): GameSe
     return game;
   };
 
-  const mutate = (id: string, action: "reveal" | "flag", cell: unknown): GameMutationResult => {
+  const mutate = (id: string, action: GameAction, cell: unknown): GameMutationResult => {
     assertOpen();
     const game = getGame(id);
     const index = parseCell(cell);
-    const transition = action === "reveal" ? revealCell(game.state, index) : toggleFlag(game.state, index);
+    const transition =
+      action === "reveal"
+        ? revealCell(game.state, index)
+        : action === "mark"
+          ? cycleMark(game.state, index)
+          : probeCell(game.state, index);
 
     if (transition.state === game.state) {
       logger.debug("action ignored", {
@@ -153,6 +175,7 @@ export function createGameService(dependencies: GameServiceDependencies): GameSe
         presetId: presetId ?? "custom",
         size: `${config.size.x}x${config.size.y}x${config.size.z}`,
         mineCount: config.mineCount,
+        freeReveals: config.freeReveals,
         seed: config.seed,
       });
       return game;
@@ -160,12 +183,25 @@ export function createGameService(dependencies: GameServiceDependencies): GameSe
 
     getGame,
 
+    deleteGame(id) {
+      // Closing the service forgets everything at once; nothing left to drop.
+      if (closed) return false;
+      subscribers.delete(id);
+      const removed = store.delete(id);
+      if (removed) logger.debug("game dropped", { gameId: id });
+      return removed;
+    },
+
     reveal(id, cell) {
       return mutate(id, "reveal", cell);
     },
 
-    toggleFlag(id, cell) {
-      return mutate(id, "flag", cell);
+    cycleMark(id, cell) {
+      return mutate(id, "mark", cell);
+    },
+
+    probe(id, cell) {
+      return mutate(id, "probe", cell);
     },
 
     subscribe(id, listener) {

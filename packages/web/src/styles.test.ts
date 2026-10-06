@@ -84,3 +84,95 @@ describe("game-over overlay", () => {
     expect(declarations(".result .button")["pointer-events"]).toBe("auto");
   });
 });
+
+const DOCK = declarations(".hud-dock");
+const HUD = declarations(".hud");
+const HUD_COLLAPSED = declarations(".hud-dock:not([data-open]) .hud");
+
+describe("sliding HUD panel", () => {
+  test("the dock is a rail, so clicks reach the board behind it", () => {
+    // The dock spans the panel's width even while the panel is translated out
+    // of the way; without this a transparent div would swallow board clicks.
+    expect(DOCK["pointer-events"]).toBe("none");
+    expect(HUD["pointer-events"]).toBe("auto");
+    expect(declarations(".hud-dock__toggle")["pointer-events"]).toBe("auto");
+  });
+
+  test("the collapsed panel slides fully off the left edge and animates", () => {
+    expect(HUD["transition"]).toContain("transform");
+    expect(HUD_COLLAPSED["visibility"]).toBe("hidden");
+
+    const slide = /translateX\(calc\((-?[\d.]+)%/.exec(HUD_COLLAPSED["transform"] ?? "");
+    expect(slide).not.toBeNull();
+    // A partial slide would leave the panel hanging over the board.
+    expect(Number(slide?.[1])).toBeLessThanOrEqual(-100);
+  });
+
+  test("hiding is delayed until the slide is over", () => {
+    // `visibility: hidden` immediately would cut the animation short.
+    const timing = HUD_COLLAPSED["transition"] ?? "";
+    expect(timing).toContain("visibility 0s linear 220ms");
+  });
+});
+
+describe("tool switch", () => {
+  test("the three tools share the row and the panel's two columns", () => {
+    const tools = declarations(".tools");
+    // A grid child of `.hud__buttons`, which is two columns wide.
+    expect(tools["grid-column"]).toBe("span 2");
+    expect(tools["grid-template-columns"]).toBe("repeat(3, minmax(0, 1fr))");
+  });
+
+  test("reset view still spans the panel after the tool row", () => {
+    expect(declarations(".hud__buttons .tools + .button")["grid-column"]).toBe("span 2");
+  });
+
+  test("a spent detector is visibly out of order rather than merely inert", () => {
+    expect(declarations(".tools__button:disabled")["opacity"]).toBe("0.45");
+  });
+});
+
+/*
+ * Touch.
+ *
+ * A finger is also how a phone scrolls the page, so the canvas has to claim the
+ * gesture for itself - without `touch-action: none` an orbit drag scrolls or
+ * zooms the page instead. The HUD is left able to scroll, since a phone in
+ * landscape cannot show the whole panel. The rest is ergonomics: taps have to
+ * land on targets a fingertip can hit, and the panels stay clear of the notch.
+ */
+describe("touch screen", () => {
+  test("the canvas claims the gesture instead of letting the page scroll", () => {
+    expect(declarations(".canvas-shell canvas")["touch-action"]).toBe("none");
+  });
+
+  test("the page cannot be pulled or bounced out of the game", () => {
+    // Asserted as a declaration rather than through `declarations()`: the root
+    // selector list is wrapped over several lines.
+    expect(CSS).toMatch(/overscroll-behavior:\s*none/);
+  });
+
+  test("the HUD clears the notch and the home indicator", () => {
+    expect(DOCK["top"]).toContain("var(--safe-top)");
+    expect(DOCK["left"]).toContain("var(--safe-left)");
+  });
+
+  test("a touch device gets controls sized for a fingertip", () => {
+    // A block of its own, so the 44px floor cannot be lost in a later edit.
+    const coarse = CSS.slice(CSS.indexOf("@media (pointer: coarse)"));
+    expect(coarse.length).toBeGreaterThan(0);
+    expect(coarse).toContain("min-height: 44px");
+  });
+
+  test("the notice overlay does not swallow the tap that follows it", () => {
+    expect(declarations(".notice")["pointer-events"]).toBe("none");
+  });
+
+  test("the folded-panel strip clears the notch and takes no taps", () => {
+    const strip = declarations(".compact-status");
+    expect(strip["top"]).toContain("var(--safe-top)");
+    expect(strip["right"]).toContain("var(--safe-right)");
+    // It sits over the board, so a tap has to pass through it.
+    expect(strip["pointer-events"]).toBe("none");
+  });
+});

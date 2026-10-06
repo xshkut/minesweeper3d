@@ -32,7 +32,7 @@ export function findPreset(id: string): GamePreset | undefined {
  */
 export function presetConfig(
   id: string,
-  options: { seed?: number; firstRevealSafe?: boolean } = {},
+  options: { seed?: number; firstRevealSafe?: boolean; freeReveals?: number } = {},
 ): GameConfig {
   const preset = findPreset(id);
   if (preset === undefined) throw new RangeError(`Unknown preset "${id}"`);
@@ -41,6 +41,7 @@ export function presetConfig(
     size: preset.size,
     mineCount: preset.mineCount,
     firstRevealSafe: options.firstRevealSafe ?? DEFAULT_RULES.firstRevealSafe,
+    ...(options.freeReveals === undefined ? {} : { freeReveals: options.freeReveals }),
     // Only forward the seed when the caller pinned one; otherwise let
     // `createConfig` pick a fresh random seed.
     ...(options.seed === undefined ? {} : { seed: options.seed }),
@@ -48,6 +49,8 @@ export function presetConfig(
 }
 
 /** Starts a game on the default preset with a fresh random seed. */
-export function createDefaultGame(options: { presetId?: string; seed?: number } = {}): GameState {
+export function createDefaultGame(
+  options: { presetId?: string; seed?: number; freeReveals?: number } = {},
+): GameState {
   return createGame(presetConfig(options.presetId ?? DEFAULT_PRESET_ID, options));
 }

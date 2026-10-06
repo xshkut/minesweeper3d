@@ -23,6 +23,8 @@ export interface CreateOptions {
   readonly presetId: string | undefined;
   readonly seed: number | undefined;
   readonly firstRevealSafe: boolean | undefined;
+  /** Charges the free-reveal aid grants; `0` turns the aid off. */
+  readonly freeReveals: number | undefined;
 }
 
 /** A resolved config plus the preset it came from (for logging). */
@@ -73,17 +75,25 @@ export function readCreateOptions(request: Record<string, unknown>): CreateOptio
   else if (typeof rawFirstRevealSafe === "boolean") firstRevealSafe = rawFirstRevealSafe;
   else issues.push("firstRevealSafe must be a boolean");
 
+  // A range check only: how many charges actually fit on a board depends on the
+  // board, so the engine owns that bound and reports it through `invalid_config`.
+  const rawFreeReveals = request["freeReveals"];
+  let freeReveals: number | undefined;
+  if (rawFreeReveals === undefined || rawFreeReveals === null) freeReveals = undefined;
+  else if (Number.isInteger(rawFreeReveals) && (rawFreeReveals as number) >= 0) freeReveals = rawFreeReveals as number;
+  else issues.push("freeReveals must be a non-negative integer");
+
   if (issues.length > 0) {
     throw new InvalidGameRequestError("invalid_body", "Request body is invalid", issues);
   }
-  return { presetId, seed, firstRevealSafe };
+  return { presetId, seed, firstRevealSafe, freeReveals };
 }
 
 /**
  * Resolves the rules config of a new game.
  *
- * An explicit `config` wins over `presetId`; `seed` and `firstRevealSafe`
- * override either source.
+ * An explicit `config` wins over `presetId`; `seed`, `firstRevealSafe` and
+ * `freeReveals` override either source.
  */
 export function resolveConfig(request: Record<string, unknown>, options: CreateOptions): ResolvedConfig {
   const rawConfig = request["config"];
@@ -100,6 +110,10 @@ export function resolveConfig(request: Record<string, unknown>, options: CreateO
         mineCount: base.mineCount,
         seed: options.seed ?? base.seed,
         firstRevealSafe: options.firstRevealSafe ?? base.firstRevealSafe,
+        // Not overridable from the request body: the fatal-mine rule belongs to
+        // the mode a room plays, and a private game simply keeps the default.
+        minesFatal: base.minesFatal,
+        freeReveals: options.freeReveals ?? base.freeReveals,
       }),
       presetId: undefined,
     };
@@ -117,6 +131,7 @@ export function resolveConfig(request: Record<string, unknown>, options: CreateO
   const base = presetConfig(presetId, {
     ...(options.seed === undefined ? {} : { seed: options.seed }),
     ...(options.firstRevealSafe === undefined ? {} : { firstRevealSafe: options.firstRevealSafe }),
+    ...(options.freeReveals === undefined ? {} : { freeReveals: options.freeReveals }),
   });
   return { config: validatedConfig(base), presetId };
 }

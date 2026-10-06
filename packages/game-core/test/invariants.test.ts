@@ -3,15 +3,16 @@ import {
   createConfig,
   createGame,
   createGrid,
+  cycleMark,
   isFinished,
   isGameOver,
   mineCells,
   NEIGHBOURS,
   neighboursOf,
   presetConfig,
+  probeCell,
   randomInt,
   revealCell,
-  toggleFlag,
   vec3,
 } from "../src/index";
 import type { CellIndex, GameState, Vec3 } from "../src/index";
@@ -35,6 +36,16 @@ function expectConsistent(state: GameState): void {
   expect(mines).toHaveLength(state.config.mineCount);
   expect(state.cells.filter((cell) => cell.isRevealed && !cell.hasMine)).toHaveLength(state.revealedCount);
   expect(state.cells.filter((cell) => cell.isFlagged)).toHaveLength(state.flagCount);
+
+  // A cell is either claimed or doubted, never both, because one cycling action
+  // is the only writer of the two booleans.
+  expect(state.cells.filter((cell) => cell.isFlagged && cell.isQuestioned)).toHaveLength(0);
+
+  // Charges are spent one per probed cell and never come back, so the budget
+  // and the probe marks have to agree exactly, at every point in a game.
+  const probed = state.cells.filter((cell) => cell.isProbed).length;
+  expect(probed).toBeLessThanOrEqual(state.config.freeReveals);
+  expect(state.freeRevealsLeft).toBe(state.config.freeReveals - probed);
 
   // Every adjacency count matches a brute-force recount of its 26 neighbours.
   const mineOffsets = new Set(mines.map((cell) => grid.offsetOf(cell.index)));
@@ -73,24 +84,37 @@ function playRandomly(state: GameState, steps: number, seed: number): GameState 
   let current = state;
   let rng = seed;
   const { x, y, z } = current.config.size;
+  // Free reveals are only part of the action space of a board that grants them.
+  const actions = current.config.freeReveals > 0 ? 3 : 2;
 
   for (let step = 0; step < steps; step += 1) {
-    const action = randomInt(rng, 0, 2);
+    const action = randomInt(rng, 0, actions - 1);
     const pickX = randomInt(action.state, 0, x - 1);
     const pickY = randomInt(pickX.state, 0, y - 1);
     const pickZ = randomInt(pickY.state, 0, z - 1);
     rng = pickZ.state;
 
     const cell: CellIndex = vec3(pickX.value, pickY.value, pickZ.value);
-    current = action.value === 0 ? toggleFlag(current, cell).state : revealCell(current, cell).state;
+    current =
+      action.value === 0
+        ? cycleMark(current, cell).state
+        : action.value === 1
+          ? revealCell(current, cell).state
+          : probeCell(current, cell).state;
     expectConsistent(current);
   }
 
   return current;
 }
 
-function sized(size: Vec3, mineCount: number, seed: number, firstRevealSafe = false): GameState {
-  return createGame(createConfig({ size, mineCount, seed, firstRevealSafe }));
+function sized(
+  size: Vec3,
+  mineCount: number,
+  seed: number,
+  firstRevealSafe = false,
+  freeReveals = 0,
+): GameState {
+  return createGame(createConfig({ size, mineCount, seed, firstRevealSafe, freeReveals }));
 }
 
 describe("state invariants", () => {
@@ -111,6 +135,17 @@ describe("state invariants", () => {
     }
   });
 
+  it("hold through long random games with free reveals in play", () => {
+    const sizes: readonly Vec3[] = [vec3(3, 3, 3), vec3(5, 5, 5), vec3(6, 6, 6)];
+
+    for (let seed = 1; seed <= 12; seed += 1) {
+      const size = sizes[seed % sizes.length] as Vec3;
+      const cellCount = size.x * size.y * size.z;
+      const state = sized(size, Math.max(1, Math.round(cellCount * 0.09)), seed, false, 4);
+      expectConsistent(playRandomly(state, 60, seed * 31));
+    }
+  });
+
   it("are frozen once the game is over", () => {
     const finished = playRandomly(sized(vec3(4, 4, 4), 5, 7), 80, 99);
     if (!isFinished(finished)) return;
@@ -118,7 +153,8 @@ describe("state invariants", () => {
     const cells = finished.cells.map((cell) => cell.index);
     const target = cells[cells.length - 1] as CellIndex;
     expect(revealCell(finished, target).state).toBe(finished);
-    expect(toggleFlag(finished, target).state).toBe(finished);
+    expect(cycleMark(finished, target).state).toBe(finished);
+    expect(probeCell(finished, target).state).toBe(finished);
     expect(isGameOver(finished.status)).toBe(true);
   });
 

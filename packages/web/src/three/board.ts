@@ -8,6 +8,42 @@ import type { Point3 } from "./orbit";
 /** Edge length of one cell in world units; the prototype's `basis`. */
 export const CELL_SIZE = 10;
 
+/**
+ * How far a corner is rounded off a covered cube.
+ *
+ * Cubes sit exactly `CELL_SIZE` apart, so rounding the corners is what creates
+ * the groove between neighbours: without it the board reads as one block with
+ * lines drawn on it, and with it as a tray of separate objects.
+ */
+export const CORNER_RADIUS = CELL_SIZE * 0.14;
+
+/**
+ * Subdivisions of a rounded corner.
+ *
+ * Four is the point where the corner stops looking faceted at this size; more
+ * only costs vertices, since the cubes are never seen from closer than the
+ * camera's near plane allows.
+ */
+export const CORNER_SEGMENTS = 4;
+
+/**
+ * How far towards the camera a mark floats off its cell centre.
+ *
+ * A glyph at the centre sits *inside* an opaque cube and is simply not drawn,
+ * so every mark (the question mark, the probe result, the hover indicator) is
+ * pushed out along the view direction until it clears the surface it belongs
+ * to. Clearing it is a real bound rather than an eyeballed one: a cube reaches
+ * `CELL_SIZE * sqrt(3) / 2` (about 0.87 of a cell) from its centre towards a
+ * corner, and the default camera looks at the board from exactly that diagonal.
+ * Sitting at the half-diagonal would only *touch* the cube, so this adds a
+ * little over seven tenths of a cell on top - enough for the probe ball to read
+ * as a ball and the question mark to hold its shape against the face behind it,
+ * while staying close enough that a mark still reads as belonging to its own
+ * cube. `board.test.ts` pins the lower bound, because a tidier-looking fraction
+ * such as `0.75` passes every other test and silently buries every mark.
+ */
+export const MARK_OFFSET = CELL_SIZE * 1.6;
+
 /** Colours ported from `scripts/entry.js`. */
 export const BOARD_COLORS = Object.freeze({
   /** Covered cube tint.  Neutral: the generated block texture is the colour. */
@@ -16,6 +52,12 @@ export const BOARD_COLORS = Object.freeze({
   hover: 0x005555,
   /** Flagged cube tint. */
   flag: 0xffff00,
+  /** Question-marked cube tint. Same hue as the glyph, so the two read as one mark. */
+  questioned: 0xffa100,
+  /** Cube tint after a free reveal found a mine. */
+  probedMine: 0xff3b30,
+  /** Cube tint after a free reveal found nothing. */
+  probedSafe: 0x18c964,
   /** Mine tint, red while playing and lost. */
   mine: 0xff0000,
   /** Mine tint once the game is won. */

@@ -5,17 +5,25 @@ import { vec3 } from "../src/index";
 /** Test fixtures: small, explicit boards beat random ones in unit tests. */
 export const at = (x: number, y: number, z: number): CellIndex => vec3(x, y, z);
 
+/** Rules options accepted by every fixture builder. */
+export interface FixtureOptions {
+  seed?: number;
+  firstRevealSafe?: boolean;
+  minesFatal?: boolean;
+  freeReveals?: number;
+}
+
 /** Rules config with a pinned seed and the game-y "safe opening" rule off. */
-export function testConfig(
-  size: Vec3,
-  mineCount: number,
-  options: { seed?: number; firstRevealSafe?: boolean } = {},
-): GameConfig {
+export function testConfig(size: Vec3, mineCount: number, options: FixtureOptions = {}): GameConfig {
   return {
     size,
     mineCount,
     seed: options.seed ?? 1,
     firstRevealSafe: options.firstRevealSafe ?? false,
+    minesFatal: options.minesFatal ?? true,
+    // The aid is off in unit tests unless a test asks for it, so that nothing
+    // accidentally depends on a charge being available.
+    freeReveals: options.freeReveals ?? 0,
   };
 }
 
@@ -23,17 +31,13 @@ export function testConfig(
 export function gameWithMines(
   size: Vec3,
   mines: readonly CellIndex[],
-  options: { seed?: number; firstRevealSafe?: boolean } = {},
+  options: FixtureOptions = {},
 ): GameState {
   return createGameWithMines(testConfig(size, mines.length, options), mines);
 }
 
 /** A game with randomly placed mines (deterministic for a given seed). */
-export function game(
-  size: Vec3,
-  mineCount: number,
-  options: { seed?: number; firstRevealSafe?: boolean } = {},
-): GameState {
+export function game(size: Vec3, mineCount: number, options: FixtureOptions = {}): GameState {
   return createGame(testConfig(size, mineCount, options));
 }
 
@@ -58,6 +62,16 @@ export function revealedKeys(state: GameState): string[] {
 /** Keys of all flagged cells, sorted. */
 export function flaggedKeys(state: GameState): string[] {
   return state.cells.filter((entry) => entry.isFlagged).map(keyOf).sort();
+}
+
+/** Keys of all questioned cells, sorted. */
+export function questionedKeys(state: GameState): string[] {
+  return state.cells.filter((entry) => entry.isQuestioned).map(keyOf).sort();
+}
+
+/** Keys of all probed cells, sorted. */
+export function probedKeys(state: GameState): string[] {
+  return state.cells.filter((entry) => entry.isProbed).map(keyOf).sort();
 }
 
 /** Keys of all mines, sorted. */

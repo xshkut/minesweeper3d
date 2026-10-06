@@ -2,7 +2,7 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { GAME_PRESETS, createGame, presetConfig, revealCell, toClientView } from "@minesweeper3d/game-core";
 import type { ClientGameState } from "@minesweeper3d/game-core";
-import { Hud } from "./Hud";
+import { Hud, prefersCompactStart } from "./Hud";
 import type { HudProps } from "./Hud";
 import { summarize } from "../session/summary";
 import type { SessionSnapshot } from "../session/types";
@@ -27,7 +27,7 @@ function renderHud(overrides: Partial<HudProps> = {}): Record<string, ReturnType
   const handlers = {
     onNewGame: mock(() => undefined),
     onSelectPreset: mock(() => undefined),
-    onToggleFlagMode: mock(() => undefined),
+    onSelectTool: mock(() => undefined),
     onResetView: mock(() => undefined),
     onPlayAgain: mock(() => undefined),
     onRetry: mock(() => undefined),
@@ -40,7 +40,8 @@ function renderHud(overrides: Partial<HudProps> = {}): Record<string, ReturnType
       summary={summarize(state)}
       elapsedMs={0}
       presetId="tiny"
-      flagMode={false}
+      tool="reveal"
+      freeRevealsLeft={0}
       notice={null}
       {...handlers}
       {...overrides}
@@ -82,53 +83,82 @@ describe("Hud", () => {
     expect(handlers["onSelectPreset"]).toHaveBeenCalledWith("medium");
   });
 
-  test("new game, flag mode and reset view call their handlers", () => {
+  test("new game, the tool buttons and reset view call their handlers", () => {
     const handlers = renderHud();
 
     fireEvent.click(screen.getByTestId("new-game"));
     expect(handlers["onNewGame"]).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByTestId("flag-mode"));
-    expect(handlers["onToggleFlagMode"]).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("tool-flag"));
+    expect(handlers["onSelectTool"]).toHaveBeenCalledWith("flag");
 
     fireEvent.click(screen.getByTestId("reset-view"));
     expect(handlers["onResetView"]).toHaveBeenCalledTimes(1);
   });
 
-  test("flag mode reflects its pressed state", () => {
+  test("the tool switch reflects the pressed tool", () => {
+    const state = board();
     const { rerender } = render(
       <Hud
-        snapshot={snapshotWith(board())}
-        summary={summarize(board())}
+        snapshot={snapshotWith(state)}
+        summary={summarize(state)}
         elapsedMs={0}
         presetId="tiny"
-        flagMode={false}
+        tool="flag"
+        freeRevealsLeft={0}
         notice={null}
         onNewGame={() => undefined}
         onSelectPreset={() => undefined}
-        onToggleFlagMode={() => undefined}
+        onSelectTool={() => undefined}
         onResetView={() => undefined}
         onPlayAgain={() => undefined}
       />,
     );
-    expect(screen.getByTestId("flag-mode").getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("tool-flag").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tool-reveal").getAttribute("aria-pressed")).toBe("false");
 
     rerender(
       <Hud
-        snapshot={snapshotWith(board())}
-        summary={summarize(board())}
+        snapshot={snapshotWith(state)}
+        summary={summarize(state)}
         elapsedMs={0}
         presetId="tiny"
-        flagMode
+        tool="reveal"
+        freeRevealsLeft={0}
         notice={null}
         onNewGame={() => undefined}
         onSelectPreset={() => undefined}
-        onToggleFlagMode={() => undefined}
+        onSelectTool={() => undefined}
         onResetView={() => undefined}
         onPlayAgain={() => undefined}
       />,
     );
-    expect(screen.getByTestId("flag-mode").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tool-reveal").getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByTestId("tool-flag").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  test("disables the detector when the board has no free reveals left", () => {
+    renderHud({ tool: "reveal", freeRevealsLeft: 0 });
+    expect((screen.getByTestId("tool-probe") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("keeps the detector available while charges remain", () => {
+    renderHud({ tool: "probe", freeRevealsLeft: 2 });
+    expect((screen.getByTestId("tool-probe") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("counts question marks and shows the free-reveal budget when the aid is on", () => {
+    const state = toClientView(createGame(presetConfig("tiny", { seed: 4, freeReveals: 2 })));
+    renderHud({ snapshot: snapshotWith(state), summary: summarize(state) });
+
+    expect(screen.getByTestId("hud-questions").textContent).toBe("0");
+    expect(screen.getByTestId("hud-free-reveals").textContent).toBe("2 / 2");
+  });
+
+  test("hides the free-reveal row when the aid is off", () => {
+    renderHud();
+    expect(screen.queryByTestId("hud-free-reveals")).toBeNull();
+    expect(screen.getByTestId("hud-questions").textContent).toBe("0");
   });
 
   test("shows the result banner with a replay action once the game is over", () => {
@@ -165,5 +195,113 @@ describe("Hud", () => {
     expect(screen.getByTestId("connection-error").textContent).toBe("Cannot reach the game server");
     fireEvent.click(screen.getByTestId("connection-retry"));
     expect(handlers["onRetry"]).toHaveBeenCalledTimes(1);
+  });
+
+  test("slides the panel away and back with the dock toggle", () => {
+    renderHud();
+    const dock = screen.getByTestId("hud-toggle").parentElement;
+    const toggle = screen.getByTestId("hud-toggle");
+
+    // The dock is the panel's parent: the toggle has to be a sibling, or the
+    // panel's own `overflow: auto` would clip it while it slides.
+    expect(dock?.className).toBe("hud-dock");
+    expect(dock?.querySelector("#hud-panel")).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(dock?.hasAttribute("data-open")).toBe(true);
+
+    fireEvent.click(toggle);
+    expect(screen.getByTestId("hud-toggle").getAttribute("aria-expanded")).toBe("false");
+    expect(dock?.hasAttribute("data-open")).toBe(false);
+    // Collapsing only moves the panel; it must stay mounted with its controls.
+    expect(screen.getByTestId("new-game")).toBeDefined();
+
+    fireEvent.click(screen.getByTestId("hud-toggle"));
+    expect(dock?.hasAttribute("data-open")).toBe(true);
+  });
+});
+
+/**
+ * Where the panel starts.
+ *
+ * On a phone the panel is nearly the whole screen, so it opens folded away and
+ * the cube gets the screen; with a mouse it costs a strip of the left edge and
+ * stays open. The decision reads a media query, which the test environment
+ * answers "no" to by default - hence the explicit stubs below.
+ */
+describe("panel start state", () => {
+  /** Runs `body` with `window.matchMedia` answering `(pointer: coarse)` as asked. */
+  function withCoarsePointer(matches: boolean, body: () => void): void {
+    const host = globalThis.window as unknown as { matchMedia?: unknown };
+    const original = host.matchMedia;
+    host.matchMedia = ((query: string) => ({ matches, media: query })) as unknown as typeof host.matchMedia;
+    try {
+      body();
+    } finally {
+      host.matchMedia = original;
+    }
+  }
+
+  test("a touch-first screen starts with the panel folded away", () => {
+    withCoarsePointer(true, () => {
+      expect(prefersCompactStart()).toBe(true);
+      renderHud();
+
+      const toggle = screen.getByTestId("hud-toggle");
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(toggle.parentElement?.hasAttribute("data-open")).toBe(false);
+      // Folded away, not unmounted: the toggle is still there to open it.
+      expect(screen.getByTestId("new-game")).toBeDefined();
+    });
+  });
+
+  test("a mouse keeps the panel open", () => {
+    withCoarsePointer(false, () => {
+      expect(prefersCompactStart()).toBe(false);
+      renderHud();
+
+      expect(screen.getByTestId("hud-toggle").getAttribute("aria-expanded")).toBe("true");
+    });
+  });
+
+  test("an environment without media queries keeps the panel open", () => {
+    withCoarsePointer(true, () => {
+      (globalThis.window as unknown as { matchMedia?: unknown }).matchMedia = undefined;
+
+      expect(prefersCompactStart()).toBe(false);
+    });
+  });
+
+  test("a folded panel keeps the clock and the mine counter in view", () => {
+    withCoarsePointer(true, () => {
+      renderHud({ elapsedMs: 65_000 });
+
+      expect(screen.getByTestId("hud-compact-mines").textContent).toBe(
+        screen.getByTestId("hud-mines-left").textContent,
+      );
+      expect(screen.getByTestId("hud-compact-timer").textContent).toBe("01:05");
+
+      // The panel's own status bar is still the one the room and the automation
+      // hook read; the strip carries its own ids so the two cannot be confused.
+      expect(screen.getByTestId("hud-mines-left")).toBeDefined();
+    });
+  });
+
+  test("opening the panel takes the strip away", () => {
+    withCoarsePointer(true, () => {
+      renderHud();
+
+      fireEvent.click(screen.getByTestId("hud-toggle"));
+
+      expect(screen.getByTestId("hud-toggle").getAttribute("aria-expanded")).toBe("true");
+      expect(screen.queryByTestId("hud-compact")).toBeNull();
+    });
+  });
+
+  test("a mouse screen never shows the strip", () => {
+    withCoarsePointer(false, () => {
+      renderHud();
+
+      expect(screen.queryByTestId("hud-compact")).toBeNull();
+    });
   });
 });

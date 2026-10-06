@@ -3,60 +3,103 @@ import {
   cellAt,
   createConfig,
   createGame,
+  cycleMark,
   InvalidGameStateError,
   mineCells,
   remainingMineCount,
   revealCell,
-  toggleFlag,
   toClientView,
   vec3,
 } from "../src/index";
-import { at, cell, eventTypes, game, gameWithMines, snapshot } from "./helpers";
+import { at, cell, eventTypes, flaggedKeys, game, gameWithMines, questionedKeys, snapshot } from "./helpers";
 
-describe("flags", () => {
-  it("toggles on and off and keeps the counter in sync", () => {
+describe("marks", () => {
+  it("cycles unknown, flag, question and back to unknown", () => {
     const state = game(vec3(3, 3, 3), 2, { seed: 1 });
+    const target = at(0, 0, 0);
 
-    const flagged = toggleFlag(state, at(0, 0, 0));
+    const flagged = cycleMark(state, target);
     expect(flagged.state.flagCount).toBe(1);
     expect(cell(flagged.state, 0, 0, 0).isFlagged).toBe(true);
-    expect(eventTypes(flagged.events)).toEqual(["flagChanged"]);
-    expect(flagged.events[0]).toEqual({ type: "flagChanged", cell: at(0, 0, 0), flagged: true });
+    expect(cell(flagged.state, 0, 0, 0).isQuestioned).toBe(false);
+    expect(eventTypes(flagged.events)).toEqual(["markChanged"]);
+    expect(flagged.events[0]).toEqual({ type: "markChanged", cell: target, mark: "flag" });
     expect(remainingMineCount(flagged.state)).toBe(1);
 
-    const unflagged = toggleFlag(flagged.state, at(0, 0, 0));
-    expect(unflagged.state.flagCount).toBe(0);
-    expect(cell(unflagged.state, 0, 0, 0).isFlagged).toBe(false);
-    expect(remainingMineCount(unflagged.state)).toBe(2);
+    const questioned = cycleMark(flagged.state, target);
+    // The question mark takes the flag's place rather than adding to it: the
+    // cell is a doubt, not a claim, so the mine counter goes back up.
+    expect(questioned.state.flagCount).toBe(0);
+    expect(cell(questioned.state, 0, 0, 0).isFlagged).toBe(false);
+    expect(cell(questioned.state, 0, 0, 0).isQuestioned).toBe(true);
+    expect(flaggedKeys(questioned.state)).toEqual([]);
+    expect(questionedKeys(questioned.state)).toEqual(["0,0,0"]);
+    expect(questioned.events[0]).toEqual({ type: "markChanged", cell: target, mark: "question" });
+    expect(remainingMineCount(questioned.state)).toBe(2);
+
+    const cleared = cycleMark(questioned.state, target);
+    expect(cleared.state.flagCount).toBe(0);
+    expect(cell(cleared.state, 0, 0, 0).isFlagged).toBe(false);
+    expect(cell(cleared.state, 0, 0, 0).isQuestioned).toBe(false);
+    expect(cleared.events[0]).toEqual({ type: "markChanged", cell: target, mark: "none" });
+
+    // Three clicks come back to where the player started.
+    expect(cleared.state.cells).toEqual(state.cells);
+  });
+
+  it("never leaves a cell both flagged and questioned", () => {
+    const state = game(vec3(3, 3, 3), 2, { seed: 1 });
+    let current = state;
+    // Six clicks walk the cycle twice; no step may set both booleans.
+    for (let step = 0; step < 6; step += 1) {
+      current = cycleMark(current, at(1, 1, 1)).state;
+      const target = cell(current, 1, 1, 1);
+      expect(target.isFlagged && target.isQuestioned).toBe(false);
+    }
   });
 
   it("does not start the clock", () => {
-    const flagged = toggleFlag(game(vec3(3, 3, 3), 2, { seed: 1 }), at(0, 0, 0)).state;
-    expect(flagged.status).toBe("ready");
+    const state = game(vec3(3, 3, 3), 2, { seed: 1 });
+    expect(cycleMark(state, at(0, 0, 0)).state.status).toBe("ready");
+    expect(cycleMark(cycleMark(state, at(0, 0, 0)).state, at(0, 0, 0)).state.status).toBe("ready");
   });
 
-  it("protects a cell from being revealed", () => {
-    const state = toggleFlag(gameWithMines(vec3(3, 3, 3), [at(2, 2, 2)]), at(2, 2, 2)).state;
+  it("protects a flagged cell from being revealed", () => {
+    const state = cycleMark(gameWithMines(vec3(3, 3, 3), [at(2, 2, 2)]), at(2, 2, 2)).state;
     const transition = revealCell(state, at(2, 2, 2));
 
     expect(transition.state).toBe(state);
     expect(transition.state.status).toBe("ready");
   });
 
+  it("leaves a questioned cell openable", () => {
+    // A doubt is not a claim: the player can still open the cell, which is
+    // exactly what makes the question mark useful instead of a second flag.
+    const questioned = cycleMark(
+      cycleMark(gameWithMines(vec3(3, 3, 3), [at(2, 2, 2)]), at(2, 2, 2)).state,
+      at(2, 2, 2),
+    ).state;
+    expect(questioned.flagCount).toBe(0);
+
+    const opened = revealCell(questioned, at(2, 2, 2));
+    expect(opened.state).not.toBe(questioned);
+    expect(opened.state.status).toBe("lost");
+  });
+
   it("is ignored on revealed cells and after the game is over", () => {
     const revealed = revealCell(gameWithMines(vec3(3, 3, 3), [at(0, 0, 0)]), at(0, 0, 1)).state;
-    expect(toggleFlag(revealed, at(0, 0, 1)).state).toBe(revealed);
+    expect(cycleMark(revealed, at(0, 0, 1)).state).toBe(revealed);
 
     const lost = revealCell(
       gameWithMines(vec3(3, 3, 3), [at(0, 0, 0)], { firstRevealSafe: false }),
       at(0, 0, 0),
     ).state;
-    expect(toggleFlag(lost, at(1, 1, 1)).state).toBe(lost);
+    expect(cycleMark(lost, at(1, 1, 1)).state).toBe(lost);
   });
 
   it("is ignored outside the board", () => {
     const state = game(vec3(3, 3, 3), 2, { seed: 1 });
-    expect(toggleFlag(state, at(9, 9, 9)).state).toBe(state);
+    expect(cycleMark(state, at(9, 9, 9)).state).toBe(state);
   });
 
   it("allows more flags than mines", () => {
@@ -65,7 +108,7 @@ describe("flags", () => {
       at(0, 0, 1),
       at(0, 1, 0),
       at(1, 0, 0),
-    ].reduce((current, position) => toggleFlag(current, position).state, state);
+    ].reduce((current, position) => cycleMark(current, position).state, state);
 
     expect(over.flagCount).toBe(3);
     expect(remainingMineCount(over)).toBe(-2);
@@ -78,7 +121,7 @@ describe("state handling", () => {
     const before = snapshot(state);
 
     const afterReveal = revealCell(state, at(0, 0, 0));
-    const afterFlag = toggleFlag(afterReveal.state, at(3, 3, 3));
+    const afterFlag = cycleMark(afterReveal.state, at(3, 3, 3));
 
     expect(snapshot(state)).toBe(before);
     expect(afterReveal.state).not.toBe(state);
@@ -89,7 +132,7 @@ describe("state handling", () => {
     const state = game(vec3(3, 3, 3), 2, { seed: 1 });
     expect(revealCell(state, at(1, 1, 1)).state).toBe(state);
     expect(revealCell(state, at(-1, 0, 0)).state).toBe(state);
-    expect(toggleFlag(state, at(-1, 0, 0)).state).toBe(state);
+    expect(cycleMark(state, at(-1, 0, 0)).state).toBe(state);
   });
 
   it("answers cell lookups inside and outside the board", () => {
@@ -142,7 +185,7 @@ describe("client view", () => {
   });
 
   it("keeps the counters and flags of the full state", () => {
-    const state = toggleFlag(game(vec3(3, 3, 3), 2, { seed: 1 }), at(0, 0, 0)).state;
+    const state = cycleMark(game(vec3(3, 3, 3), 2, { seed: 1 }), at(0, 0, 0)).state;
     const view = toClientView(state);
 
     expect(view.flagCount).toBe(state.flagCount);
@@ -168,11 +211,11 @@ describe("exposed helpers", () => {
   it("rejects configs that cannot produce a playable board", () => {
     // Eight mines on eight cells would leave nothing to open.
     expect(() =>
-      createGame({ size: vec3(2, 2, 2), mineCount: 8, seed: 1, firstRevealSafe: true }),
+      createGame({ size: vec3(2, 2, 2), mineCount: 8, seed: 1, firstRevealSafe: true, minesFatal: true, freeReveals: 0 }),
     ).toThrow(InvalidGameStateError);
     // Seven mines on eight cells is the smallest playable board.
     expect(
-      createGame({ size: vec3(2, 2, 2), mineCount: 7, seed: 1, firstRevealSafe: true }).cells,
+      createGame({ size: vec3(2, 2, 2), mineCount: 7, seed: 1, firstRevealSafe: true, minesFatal: true, freeReveals: 0 }).cells,
     ).toHaveLength(8);
   });
 });

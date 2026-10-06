@@ -18,24 +18,30 @@ import { createHoverSlot } from "./hover";
 import type { HoverSlot } from "./hover";
 import { sceneLoading } from "./loading";
 import { useCameraRig } from "./useCameraRig";
-import type { BlockedReason } from "./useBoardPointer";
+import type { BlockedReason, BoardTool } from "./useBoardPointer";
 import type { Point3 } from "./orbit";
+import type { PresenceView } from "../session/presence";
 
 /** Props of {@link BoardScene}. */
 export interface BoardSceneProps {
   /** `null` while the session is still loading (or failed). */
   readonly state: ClientGameState | null;
-  readonly flagMode: boolean;
+  readonly tool: BoardTool;
   /** Bumped by the "reset view" button to re-frame the camera. */
   readonly resetToken: number;
   readonly onReveal: (cell: CellIndex) => void;
-  readonly onFlag: (cell: CellIndex) => void;
+  readonly onMark: (cell: CellIndex) => void;
+  readonly onProbe: (cell: CellIndex) => void;
   readonly onBlocked: (cell: CellIndex, reason: BlockedReason) => void;
+  /** The other seats of the room, to draw their pointers; absent offline. */
+  readonly presence?: PresenceView | undefined;
+  /** Reports where this player is pointing, when the session cares. */
+  readonly onCursor?: ((cell: CellIndex | null) => void) | undefined;
 }
 
 /** Scene contents; must be rendered inside `<Canvas>`. */
 export function BoardScene(props: BoardSceneProps): ReactElement {
-  const { state, flagMode, resetToken, onReveal, onFlag, onBlocked } = props;
+  const { state, tool, resetToken, onReveal, onMark, onProbe, onBlocked, presence, onCursor } = props;
   const hover = useMemo(createHoverSlot, []);
   const size = state?.config.size ?? null;
   const rig = useCameraRig({ size, resetToken });
@@ -58,13 +64,16 @@ export function BoardScene(props: BoardSceneProps): ReactElement {
             <Board
               key={`${state.config.size.x}x${state.config.size.y}x${state.config.size.z}`}
               state={state}
-              flagMode={flagMode}
+              tool={tool}
               hover={hover}
               pointer={rig.pointer}
               onReveal={onReveal}
-              onFlag={onFlag}
+              onMark={onMark}
+              onProbe={onProbe}
               onBlocked={onBlocked}
               onRecenter={onRecenter}
+              presence={presence}
+              onCursor={onCursor}
             />
           </Suspense>
         </ErrorBoundary>
@@ -75,13 +84,16 @@ export function BoardScene(props: BoardSceneProps): ReactElement {
 
 interface BoardProps {
   readonly state: ClientGameState;
-  readonly flagMode: boolean;
+  readonly tool: BoardTool;
   readonly hover: HoverSlot;
   readonly pointer: ReturnType<typeof useCameraRig>["pointer"];
   readonly onReveal: (cell: CellIndex) => void;
-  readonly onFlag: (cell: CellIndex) => void;
+  readonly onMark: (cell: CellIndex) => void;
+  readonly onProbe: (cell: CellIndex) => void;
   readonly onBlocked: (cell: CellIndex, reason: BlockedReason) => void;
   readonly onRecenter: (point: Point3) => void;
+  readonly presence?: PresenceView | undefined;
+  readonly onCursor?: ((cell: CellIndex | null) => void) | undefined;
 }
 
 /** Board geometry; suspends until the crate texture is there. */

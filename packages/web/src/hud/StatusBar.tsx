@@ -42,6 +42,18 @@ export function StatusBar({ summary, elapsedMs, phase }: StatusBarProps): ReactE
           </dd>
         </div>
         <div className="statusbar__item">
+          <dt>Question marks</dt>
+          <dd data-testid="hud-questions">{summary === null ? "—" : summary.questions}</dd>
+        </div>
+        {summary !== null && summary.freeReveals > 0 && (
+          <div className="statusbar__item">
+            <dt>Free reveals</dt>
+            <dd data-testid="hud-free-reveals">
+              {summary.freeRevealsLeft} / {summary.freeReveals}
+            </dd>
+          </div>
+        )}
+        <div className="statusbar__item">
           <dt>Time</dt>
           <dd data-testid="hud-timer">{formatDuration(elapsedMs)}</dd>
         </div>

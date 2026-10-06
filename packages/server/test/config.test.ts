@@ -4,7 +4,8 @@
  */
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import { defaultWebDist, loadServerConfig, SERVER_VERSION } from "../src/config";
+import { defaultStateFile, defaultWebDist, loadServerConfig, SERVER_VERSION } from "../src/config";
+import { ROOM_TTL_MS } from "../src/rooms/service";
 import { REPO_ROOT } from "./support";
 
 describe("loadServerConfig", () => {
@@ -61,5 +62,40 @@ describe("loadServerConfig", () => {
 
   test("rejects an unknown log level", () => {
     expect(() => loadServerConfig({ LOG_LEVEL: "verbose" })).toThrow(/LOG_LEVEL/);
+  });
+});
+
+describe("state file configuration", () => {
+  test("defaults to a temporary file that belongs to this port", () => {
+    const config = loadServerConfig({});
+
+    expect(config.stateFile).toBe(defaultStateFile(8000));
+    expect(config.stateFile).toContain("minesweeper3d");
+    // Two servers on one host must not overwrite each other's rooms.
+    expect(loadServerConfig({ PORT: "8001" }).stateFile).not.toBe(config.stateFile);
+  });
+
+  test("resolves a relative path against the working directory", () => {
+    expect(loadServerConfig({ STATE_FILE: ".tmp/state.json" }).stateFile).toBe(resolve(".tmp/state.json"));
+  });
+
+  test("turns persistence off on request, and a blank value keeps the default", () => {
+    for (const off of ["off", "none", "memory", "DISABLED", " off "]) {
+      expect(loadServerConfig({ STATE_FILE: off }).stateFile).toBeUndefined();
+    }
+    expect(loadServerConfig({ STATE_FILE: "" }).stateFile).toBe(defaultStateFile(8000));
+  });
+
+  test("defaults the room TTL to a day", () => {
+    expect(loadServerConfig({}).roomTtlMs).toBe(ROOM_TTL_MS);
+    expect(ROOM_TTL_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  test("reads a room TTL override and rejects a nonsense one", () => {
+    expect(loadServerConfig({ ROOM_TTL_MS: "60000" }).roomTtlMs).toBe(60_000);
+
+    for (const bad of ["0", "-1", "1.5", "soon"]) {
+      expect(() => loadServerConfig({ ROOM_TTL_MS: bad })).toThrow(/ROOM_TTL_MS/);
+    }
   });
 });

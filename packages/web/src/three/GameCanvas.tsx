@@ -12,16 +12,22 @@ import type { CellIndex, ClientGameState } from "@minesweeper3d/game-core";
 import { BoardScene } from "./BoardScene";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { sceneLoading } from "./loading";
-import type { BlockedReason } from "./useBoardPointer";
+import type { BlockedReason, BoardTool } from "./useBoardPointer";
+import type { PresenceView } from "../session/presence";
 
 /** Props of {@link GameCanvas}. */
 export interface GameCanvasProps {
   readonly state: ClientGameState | null;
-  readonly flagMode: boolean;
+  readonly tool: BoardTool;
   readonly resetToken: number;
   readonly onReveal: (cell: CellIndex) => void;
-  readonly onFlag: (cell: CellIndex) => void;
+  readonly onMark: (cell: CellIndex) => void;
+  readonly onProbe: (cell: CellIndex) => void;
   readonly onBlocked: (cell: CellIndex, reason: BlockedReason) => void;
+  /** The other seats of the room, to draw their pointers; absent offline. */
+  readonly presence?: PresenceView | undefined;
+  /** Reports where this player is pointing, when the session cares. */
+  readonly onCursor?: ((cell: CellIndex | null) => void) | undefined;
 }
 
 /** Field of view, near and far planes ported from the prototype. */
@@ -53,11 +59,14 @@ export function GameCanvas(props: GameCanvasProps): ReactElement {
         >
           <BoardScene
             state={props.state}
-            flagMode={props.flagMode}
+            tool={props.tool}
             resetToken={props.resetToken}
             onReveal={props.onReveal}
-            onFlag={props.onFlag}
+            onMark={props.onMark}
+            onProbe={props.onProbe}
             onBlocked={props.onBlocked}
+            presence={props.presence}
+            onCursor={props.onCursor}
           />
         </Canvas>
       </ErrorBoundary>

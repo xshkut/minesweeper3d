@@ -8,6 +8,7 @@
 import { isCellIndex } from "@minesweeper3d/game-core";
 import type { CellIndex, GameEvent } from "@minesweeper3d/game-core";
 import type { GameDto } from "../games/dto";
+import type { RoomDto } from "../rooms/dto";
 
 /** Client asks to reveal a cell. */
 export interface ClientRevealMessage {
@@ -15,10 +16,28 @@ export interface ClientRevealMessage {
   readonly cell: CellIndex;
 }
 
-/** Client asks to toggle a flag. */
-export interface ClientFlagMessage {
-  readonly type: "flag";
+/** Client asks to cycle a cell's mark: flag, question, none. */
+export interface ClientMarkMessage {
+  readonly type: "mark";
   readonly cell: CellIndex;
+}
+
+/** Client spends a free reveal on a cell to learn whether it hides a mine. */
+export interface ClientProbeMessage {
+  readonly type: "probe";
+  readonly cell: CellIndex;
+}
+
+/**
+ * The cell this player is pointing at, so the other seats can draw their
+ * pointer. `null` means "no longer pointing anywhere".
+ *
+ * This is a hint, not a game action: it is relayed to the room as-is, never
+ * validated against the board beyond being a cell index, and never persisted.
+ */
+export interface ClientCursorMessage {
+  readonly type: "cursor";
+  readonly cell: CellIndex | null;
 }
 
 /** Client liveness probe. */
@@ -27,12 +46,21 @@ export interface ClientPingMessage {
 }
 
 /** Messages a client may send. */
-export type ClientMessage = ClientRevealMessage | ClientFlagMessage | ClientPingMessage;
+export type ClientMessage =
+  | ClientRevealMessage
+  | ClientMarkMessage
+  | ClientProbeMessage
+  | ClientCursorMessage
+  | ClientPingMessage;
 
 /** First frame after a successful upgrade; carries the redacted game. */
 export interface WelcomeMessage {
   readonly type: "welcome";
   readonly game: GameDto;
+  /** Present on room sockets: the room, its players and the caller's seat. */
+  readonly room?: RoomDto;
+  /** Present on room sockets when the client identified itself as a player. */
+  readonly playerId?: string;
 }
 
 /** A mutation accepted by the server, broadcast to every socket of the game. */
@@ -40,6 +68,22 @@ export interface UpdateMessage {
   readonly type: "update";
   readonly game: GameDto;
   readonly events: readonly GameEvent[];
+  /**
+   * Player whose private board this is.
+   *
+   * Absent for the board a room shares, present for every board of a race: each
+   * player only ever receives updates for their own copy, plus a `room` frame
+   * carrying everybody's progress.
+   */
+  readonly board?: string;
+  /** Player whose socket caused the change, when the socket spoke for one. */
+  readonly actor?: string;
+}
+
+/** Presence changed in a room: someone joined, left or connected. */
+export interface RoomPresenceMessage {
+  readonly type: "room";
+  readonly room: RoomDto;
 }
 
 /** Recoverable problem with a client frame; the socket stays open. */
@@ -50,13 +94,33 @@ export interface ErrorMessage {
   readonly details?: readonly string[];
 }
 
+/**
+ * Where another seat of the room is pointing; `cell` is `null` when that player
+ * stopped pointing or disconnected.
+ *
+ * Kept out of the room DTO on purpose: a pointer moves dozens of times a
+ * second, so it travels only over the socket, only to the room, and is dropped
+ * when the room empties.
+ */
+export interface CursorMessage {
+  readonly type: "cursor";
+  readonly playerId: string;
+  readonly cell: CellIndex | null;
+}
+
 /** Reply to {@link ClientPingMessage}. */
 export interface PongMessage {
   readonly type: "pong";
 }
 
 /** Messages the server may send. */
-export type ServerMessage = WelcomeMessage | UpdateMessage | ErrorMessage | PongMessage;
+export type ServerMessage =
+  | WelcomeMessage
+  | UpdateMessage
+  | RoomPresenceMessage
+  | CursorMessage
+  | ErrorMessage
+  | PongMessage;
 
 /** Successful parse of a client frame. */
 export interface ClientMessageAccepted {
@@ -74,6 +138,9 @@ export interface ClientMessageRejected {
 
 /** Result of {@link parseClientMessage}. */
 export type ClientMessageParseResult = ClientMessageAccepted | ClientMessageRejected;
+
+/** Message types a client may send, for the two rejection messages. */
+const SUPPORTED_TYPES = "reveal, mark, probe, cursor, ping";
 
 /** Codes used when a frame cannot be understood. */
 export const INVALID_JSON = "invalid_json";
@@ -93,7 +160,7 @@ export function parseClientMessage(input: unknown): ClientMessageParseResult {
   const type = input["type"];
   if (typeof type !== "string") {
     return rejected(INVALID_MESSAGE, "Message must have a string \"type\" field", [
-      "supported types: reveal, flag, ping",
+      `supported types: ${SUPPORTED_TYPES}`,
     ]);
   }
 
@@ -102,7 +169,8 @@ export function parseClientMessage(input: unknown): ClientMessageParseResult {
       return { ok: true, message: { type: "ping" } };
 
     case "reveal":
-    case "flag": {
+    case "mark":
+    case "probe": {
       const cell = input["cell"];
       if (!isCellIndex(cell)) {
         return rejected(INVALID_CELL, `"${type}" requires an integer cell {x, y, z}`, [
@@ -112,8 +180,19 @@ export function parseClientMessage(input: unknown): ClientMessageParseResult {
       return { ok: true, message: { type, cell: { x: cell.x, y: cell.y, z: cell.z } } };
     }
 
+    case "cursor": {
+      const cell = input["cell"];
+      if (cell === null) return { ok: true, message: { type: "cursor", cell: null } };
+      if (!isCellIndex(cell)) {
+        return rejected(INVALID_CELL, `"cursor" requires an integer cell {x, y, z} or null`, [
+          "expected a JSON object like { \"x\": 0, \"y\": 0, \"z\": 0 }, or null to stop pointing",
+        ]);
+      }
+      return { ok: true, message: { type: "cursor", cell: { x: cell.x, y: cell.y, z: cell.z } } };
+    }
+
     default:
-      return rejected(INVALID_MESSAGE, `Unknown message type "${type}"`, ["supported types: reveal, flag, ping"]);
+      return rejected(INVALID_MESSAGE, `Unknown message type "${type}"`, [`supported types: ${SUPPORTED_TYPES}`]);
   }
 }
 

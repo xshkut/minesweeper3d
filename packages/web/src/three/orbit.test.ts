@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_ORBIT_LIMITS,
+  WHEEL_LINE_HEIGHT,
   applyOrbitInput,
   deriveOrbit,
   normalizeAzimuth,
+  normalizeWheelDelta,
   orbitToPosition,
   withTarget,
+  zoomForPinch,
 } from "./orbit";
 import type { OrbitState } from "./orbit";
 
@@ -73,12 +76,40 @@ describe("orbit", () => {
     expectClose(dragged.azimuth, Math.PI / 4 + 1);
     expectClose(dragged.polar, 1.1);
 
-    const zoomed = applyOrbitInput(orbit(), { dragging: false, deltaX: 0, deltaY: 0, zoom: 400 });
-    expectClose(zoomed.radius, 140);
+    // One notch out pushes the camera away, one notch in pulls it closer.
+    const out = applyOrbitInput(orbit(), { dragging: false, deltaX: 0, deltaY: 0, zoom: 100 });
+    const back = applyOrbitInput(out, { dragging: false, deltaX: 0, deltaY: 0, zoom: -100 });
+    expect(out.radius).toBeGreaterThan(130);
+    expectClose(back.radius, 130);
 
     // Not dragging and not zooming is a no-op that keeps the reference.
     const state = orbit();
     expect(applyOrbitInput(state, { dragging: false, deltaX: 500, deltaY: 500, zoom: 0 })).toBe(state);
+  });
+
+  test("zoom is proportional, so a notch feels the same at any distance", () => {
+    const near = orbit({ radius: 20 });
+    const far = orbit({ radius: 800 });
+    const zoomedNear = applyOrbitInput(near, { dragging: false, deltaX: 0, deltaY: 0, zoom: 100 });
+    const zoomedFar = applyOrbitInput(far, { dragging: false, deltaX: 0, deltaY: 0, zoom: 100 });
+    expectClose(zoomedFar.radius / far.radius, zoomedNear.radius / near.radius);
+
+    // The prototype's additive zoom moved a fixed 2.5 units per notch on the
+    // opening framing of a 5x5x5 board (radius 130); this must be a clearly
+    // bigger move than that at the same distance.
+    const framing = orbit({ radius: 130 });
+    const stepped = applyOrbitInput(framing, { dragging: false, deltaX: 0, deltaY: 0, zoom: 100 });
+    expect(stepped.radius - framing.radius).toBeGreaterThan(15);
+  });
+
+  test("a wheel delta is normalised to pixels before it zooms", () => {
+    // Pixels pass through untouched.
+    expect(normalizeWheelDelta(100, 0)).toBe(100);
+    // Firefox reports lines, which are ~30x smaller than Chrome's pixels.
+    expect(normalizeWheelDelta(3, 1)).toBe(3 * WHEEL_LINE_HEIGHT);
+    // Pages need the element height, with a fallback when it is not known.
+    expect(normalizeWheelDelta(1, 2, 720)).toBe(720);
+    expect(normalizeWheelDelta(1, 2)).toBe(800);
   });
 
   test("azimuth wraps without leaving the canonical band", () => {
@@ -98,5 +129,62 @@ describe("orbit", () => {
     expect(moved.target).toEqual({ x: 0, y: 0, z: 0 });
     expect(moved.radius).toBe(state.radius);
     expect(withTarget(state, TARGET)).toBe(state);
+  });
+});
+
+/**
+ * Pinch-to-zoom.
+ *
+ * A touch screen has no wheel, so the same zoom has to come out of the distance
+ * between two fingers. The gesture is converted into the wheel's units here -
+ * the pure half of it - which is what lets the camera rig push both through
+ * {@link applyOrbitInput} without knowing which one happened.
+ */
+describe("pinch zoom", () => {
+  test("spreading the fingers halves the distance to the board", () => {
+    const state = orbit({ radius: 200 });
+
+    const closer = applyOrbitInput(state, { dragging: false, deltaX: 0, deltaY: 0, zoom: zoomForPinch(2) });
+    // Twice as far apart means twice as close: zooming in.
+    expectClose(closer.radius, 100);
+
+    const further = applyOrbitInput(state, { dragging: false, deltaX: 0, deltaY: 0, zoom: zoomForPinch(0.5) });
+    expectClose(further.radius, 400);
+  });
+
+  test("a gesture composes, so it does not depend on the event rate", () => {
+    // A pinch that ends four times as wide, delivered as three frames instead
+    // of one, has to land in exactly the same place.
+    let stepped = orbit({ radius: 200 });
+    for (const ratio of [1.5, 2, 4 / 3]) {
+      stepped = applyOrbitInput(stepped, { dragging: false, deltaX: 0, deltaY: 0, zoom: zoomForPinch(ratio) });
+    }
+
+    const oneFrame = applyOrbitInput(orbit({ radius: 200 }), {
+      dragging: false,
+      deltaX: 0,
+      deltaY: 0,
+      zoom: zoomForPinch(1.5 * 2 * (4 / 3)),
+    });
+
+    expectClose(stepped.radius, oneFrame.radius, 6);
+    expectClose(stepped.radius, 50, 6);
+  });
+
+  test("a pinch with no distance to measure is no input at all", () => {
+    // Two fingers on top of each other (ratio 0), a stale ratio, or a no-op
+    // gesture must not fling the camera at the radius limits.
+    for (const ratio of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 1]) {
+      expect(zoomForPinch(ratio)).toBe(0);
+    }
+  });
+
+  test("a pinch is clamped like any other zoom, however hard it is squeezed", () => {
+    const state = orbit({ radius: 200 });
+    const tiny = applyOrbitInput(state, { dragging: false, deltaX: 0, deltaY: 0, zoom: zoomForPinch(1000) });
+    const huge = applyOrbitInput(state, { dragging: false, deltaX: 0, deltaY: 0, zoom: zoomForPinch(0.001) });
+
+    expect(tiny.radius).toBe(DEFAULT_ORBIT_LIMITS.minRadius);
+    expect(huge.radius).toBe(DEFAULT_ORBIT_LIMITS.maxRadius);
   });
 });

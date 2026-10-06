@@ -1,5 +1,5 @@
 /**
- * Text glyphs for the adjacency numbers and the hover question mark.
+ * Text glyphs for the adjacency numbers and the cell question marks.
  *
  * `TextGeometry` is expensive to build, so every glyph is created once per
  * loaded font and cached; the cache is disposed together with its provider.

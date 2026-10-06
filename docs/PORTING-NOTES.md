@@ -91,6 +91,39 @@ code path, so the old behaviour is still reachable.
 - **Billboarded numbers**: `TextGeometry` meshes face +z in the prototype, so
   numbers were unreadable from most angles. The client turns them toward the
   camera.
+- **Proportional wheel zoom**: the prototype added a fixed `deltaY / 40` to the
+  camera distance, which moved a 5x5x5 board's opening framing by 2.5 units
+  (~2%) per notch — sluggish, and a huge *relative* jump once zoomed in close.
+  `three/orbit.ts` now scales the distance by `exp(notches * 0.15)` instead, so
+  a notch is the same fraction at any distance, and `normalizeWheelDelta`
+  converts Firefox's line-based `deltaMode` into pixels so one notch is one
+  notch in every browser. The speed is the single `ZOOM_STEP` constant.
+- **A sized canvas element**: the prototype let the renderer own the canvas box.
+  Here `three` sizes the drawing buffer, but r3f only does that from its first
+  resize observation, so between the mount and that frame the element keeps the
+  HTML default 300x150 box. `styles.css` pins `.canvas-shell canvas` to
+  `width/height: 100%`, which makes the layout box right from the first frame;
+  without it a click measured in that window lands off the board entirely (the
+  e2e caught exactly this after a leave-and-rejoin remounted the canvas).
+- **Rounded cubes and floating marks**: the prototype drew uncovered cells as
+  bare `BoxGeometry` and hung a question mark at the cell centre, where the
+  opaque cube in front of it hid it — the mark existed in the scene graph and
+  was never once visible. Cubes here use `RoundedBoxGeometry` (a lit material is
+  what actually shows the round-over), and every mark is pushed towards the
+  camera by `MARK_OFFSET` each frame so it clears its own cube. That distance is
+  a bound, not a taste: a cube reaches `CELL_SIZE * sqrt(3) / 2` towards its
+  corner and the default camera sits on exactly that diagonal, so anything less
+  is invisible. `board.test.ts` asserts it stays above the bound, because the
+  tidier-looking `0.75` used at first passes every other test and buries every
+  mark. The probe ball's *shape* differs from the question mark's as well as its
+  colour, so the states stay apart for a colour-blind player.
+- **Sliding HUD panel**: the panel's toggle is a *sibling* rather than a child,
+  because the panel scrolls (`overflow: auto`) and would clip it. The dock
+  around them is `pointer-events: none` so it stays a rail and never swallows a
+  click meant for the board, and collapsing translates the panel out and hides
+  it after the slide (`visibility 0s linear 220ms`) so it also leaves the tab
+  order. A percentage `max-height` would not resolve inside the auto-height
+  dock, so the panel caps itself at `100vh`.
 
 ## Measured parity with the prototype
 
@@ -145,3 +178,12 @@ The new `packages/server` is a small layered service (config → logger → rout
 game service → HTTP/WS + static) that owns authoritative games, validates every
 payload with the shared engine, redacts hidden information, and broadcasts state
 changes over WebSockets — the seam multiplayer will be built on.
+
+The prototype's commented-out MongoDB experiment is answered by an interface
+instead of a database: `GameStore` and `RoomStore` are the only mutable state the
+services know about, the in-memory maps implement them, and `state/persistence.ts`
+wraps the same two interfaces to snapshot everything to one temporary JSON file
+(debounced, written atomically, reloaded on boot, rooms dropped after 24 h
+untouched). A real database is therefore a third implementation of two small
+interfaces rather than a rewrite — which is also why nothing above the stores had
+to change to gain persistence.

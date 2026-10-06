@@ -14,6 +14,7 @@
 export type {
   Cell,
   CellIndex,
+  CellMark,
   ClientCell,
   ClientGameState,
   GameConfig,
@@ -37,21 +38,24 @@ export {
   createConfig,
   createGame,
   createGameWithMines,
+  cycleMark,
   isCellExposed,
   isFinished,
   mineCells,
+  probeCell,
   remainingMineCount,
   revealCell,
   toClientView,
-  toggleFlag,
 } from "./game";
 export type { CreateConfigOptions } from "./game";
 
 export {
   computeAdjacency,
   createCells,
+  markOf,
   mineCellsOf,
   mineOffsetsOf,
+  nextMark,
   placeMines,
 } from "./board";
 export type { MineLayout } from "./board";
@@ -78,5 +82,48 @@ export {
   GAME_PRESETS,
   presetConfig,
 } from "./presets";
+
+export {
+  cellCountOf,
+  DEFAULT_DIFFICULTY_ID,
+  DIFFICULTIES,
+  difficultyOf,
+  findDifficulty,
+  formatDensity,
+  isDifficultyId,
+  maxMineCount,
+  mineCountFor,
+  mineCountForDensity,
+  mineDensity,
+} from "./difficulty";
+export type { Difficulty, DifficultyId } from "./difficulty";
+
+export {
+  COOP_MAX_TIME_MS,
+  COOP_MIN_TIME_MS,
+  COOP_MS_PER_SAFE_CELL,
+  coopTimeLimitMs,
+  DEFAULT_MATCH_MODE,
+  defaultDifficultyForMode,
+  findMatchMode,
+  hasEliminations,
+  isMatchMode,
+  isMatchStatus,
+  matchModeInfo,
+  MATCH_MODES,
+  MATCH_STATUSES,
+  sharesBoard,
+  usesClock,
+} from "./modes";
+export type { MatchMode, MatchModeInfo, MatchStatus } from "./modes";
+
+export {
+  DEFAULT_ROOM_VISIBILITY,
+  findRoomVisibility,
+  isRoomVisibility,
+  roomVisibilityInfo,
+  ROOM_VISIBILITIES,
+} from "./visibility";
+export type { RoomVisibility, RoomVisibilityInfo } from "./visibility";
 
 export { addVec3, cellKey, equalsVec3, formatVec3, isCellIndex, isVec3, vec3 } from "./vec3";

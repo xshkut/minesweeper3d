@@ -111,6 +111,8 @@ describe("POST /api/games", () => {
       mineCount: 3,
       seed: expect.any(Number),
       firstRevealSafe: true,
+      minesFatal: true,
+      freeReveals: 0,
     });
     expect(game.state.cells).toHaveLength(27);
     // Nothing may reveal where the mines are before the game is over.
@@ -218,7 +220,7 @@ describe("GET /api/games/:id", () => {
   });
 });
 
-describe("POST /api/games/:id/reveal and /flag", () => {
+describe("POST /api/games/:id/reveal and /mark", () => {
   test("reveals a cell and returns the events", async () => {
     const server = await start();
     const created = gameOf(
@@ -242,7 +244,7 @@ describe("POST /api/games/:id/reveal and /flag", () => {
     expect(eventsOf(repeated)).toEqual([]);
   });
 
-  test("flags a covered cell and reports the change", async () => {
+  test("marks a covered cell and reports the change", async () => {
     const server = await start();
     const created = gameOf(
       await postJson(`${server.url}/api/games`, { presetId: "tiny", seed: 1, firstRevealSafe: true }),
@@ -257,9 +259,9 @@ describe("POST /api/games/:id/reveal and /flag", () => {
     if (target === undefined) throw new Error("expected an exposed covered cell");
 
     const result = await expectOk(
-      postJson(`${server.url}/api/games/${created.id}/flag`, { cell: target.index }),
+      postJson(`${server.url}/api/games/${created.id}/mark`, { cell: target.index }),
     );
-    expect(eventsOf(result)).toEqual([{ type: "flagChanged", cell: target.index, flagged: true }]);
+    expect(eventsOf(result)).toEqual([{ type: "markChanged", cell: target.index, mark: "flag" }]);
     expect(gameOf(result).state.flagCount).toBe(1);
   });
 
